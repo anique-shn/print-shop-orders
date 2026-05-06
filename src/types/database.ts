@@ -155,6 +155,9 @@ export interface CompanySettings {
   default_payment_terms: PaymentTerms;
   invoice_notes: string | null;
   invoice_terms: string | null;
+  primary_color: string | null;
+  accent_color: string | null;
+  email_footer: string | null;
   updated_at: string;
 }
 
@@ -202,3 +205,19 @@ export interface ServiceItemWithTiers extends ServiceItem {
 export interface ServiceGroupWithItems extends ServiceGroup {
   items: ServiceItemWithTiers[];
 }
+
+// ── Product Types ──────────────────────────────────────────────────────────────
+
+export interface Product {
+  id: string;
+  name: string;
+  category: string | null;
+  description: string | null;
+  image_url: string | null;
+  base_price: number | null;
+  sort_order: number;
+  created_at: string;
+}
+export type ProductInsert = Omit<Product, 'id' | 'created_at'>;
+
+// ── Extended CompanySettings with branding ────────────────────────────────────

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Save, Building2, AlertCircle } from 'lucide-react';
+import { Save, Building2, AlertCircle, Palette } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, db } from '@/lib/supabase';
 import { PAYMENT_TERMS } from '@/lib/utils';
@@ -41,6 +41,9 @@ interface FormState {
   default_payment_terms: string;
   invoice_notes: string;
   invoice_terms: string;
+  primary_color: string;
+  accent_color: string;
+  email_footer: string;
 }
 
 const toForm = (s: CompanySettings | null): FormState => ({
@@ -58,13 +61,50 @@ const toForm = (s: CompanySettings | null): FormState => ({
   default_payment_terms: s?.default_payment_terms ?? 'net30',
   invoice_notes: s?.invoice_notes ?? '',
   invoice_terms: s?.invoice_terms ?? '',
+  primary_color: s?.primary_color ?? '#05253D',
+  accent_color: s?.accent_color ?? '#2E7CF6',
+  email_footer: s?.email_footer ?? '',
 });
 
-function SectionHeader({ title, description }: { title: string; description: string }) {
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
   return (
-    <div className="mb-5">
-      <h2 className="text-base font-semibold font-heading">{title}</h2>
-      <p className="text-sm mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>{description}</p>
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <div className="flex items-center gap-3">
+        <div
+          className="h-9 w-9 rounded-md border shrink-0 cursor-pointer overflow-hidden"
+          style={{ borderColor: 'hsl(var(--border))' }}
+        >
+          <input
+            type="color"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-11 w-11 -mt-1 -ml-1 cursor-pointer"
+            style={{ opacity: 1 }}
+          />
+        </div>
+        <div
+          className="h-9 w-9 rounded-md border shrink-0"
+          style={{ backgroundColor: value, borderColor: 'hsl(var(--border))' }}
+        />
+        <Input
+          value={value}
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange(v);
+          }}
+          placeholder="#000000"
+          className="max-w-35 font-mono text-sm"
+        />
+      </div>
     </div>
   );
 }
@@ -90,7 +130,7 @@ export default function SettingsPage() {
     setIsDirty(true);
   };
 
-  const setSelect = (key: keyof FormState) => (value: string) => {
+  const setVal = (key: keyof FormState) => (value: string) => {
     setForm((f) => ({ ...f, [key]: value }));
     setIsDirty(true);
   };
@@ -114,6 +154,9 @@ export default function SettingsPage() {
         default_payment_terms: form.default_payment_terms as CompanySettings['default_payment_terms'],
         invoice_notes: form.invoice_notes || null,
         invoice_terms: form.invoice_terms || null,
+        primary_color: form.primary_color || '#05253D',
+        accent_color: form.accent_color || '#2E7CF6',
+        email_footer: form.email_footer || null,
         updated_at: new Date().toISOString(),
       };
 
@@ -177,7 +220,87 @@ export default function SettingsPage() {
         </Button>
       </div>
 
-      {/* Company info */}
+      {/* ── Branding ─────────────────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <Palette className="h-4 w-4" style={{ color: 'hsl(218, 91%, 57%)' }} />
+            <CardTitle className="text-sm">Branding</CardTitle>
+          </div>
+          <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+            Logo, brand colors, and email footer used across all documents.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {/* Logo URL */}
+          <div className="space-y-1.5">
+            <Label>Logo URL</Label>
+            <Input
+              value={form.logo_url}
+              onChange={set('logo_url')}
+              placeholder="https://yoursite.com/logo.png"
+            />
+            {form.logo_url && (
+              <div className="mt-2 flex items-start gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={form.logo_url}
+                  alt="Logo preview"
+                  style={{ height: 120 }}
+                  className="object-contain rounded border p-1"
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Colors */}
+          <div className="grid grid-cols-2 gap-5">
+            <ColorField
+              label="Primary Color"
+              value={form.primary_color}
+              onChange={(v) => { setForm((f) => ({ ...f, primary_color: v })); setIsDirty(true); }}
+            />
+            <ColorField
+              label="Accent Color"
+              value={form.accent_color}
+              onChange={(v) => { setForm((f) => ({ ...f, accent_color: v })); setIsDirty(true); }}
+            />
+          </div>
+
+          {/* Color preview strip */}
+          <div className="flex gap-2">
+            <div
+              className="h-8 flex-1 rounded-md flex items-center justify-center text-white text-xs font-semibold"
+              style={{ backgroundColor: form.primary_color }}
+            >
+              Primary
+            </div>
+            <div
+              className="h-8 flex-1 rounded-md flex items-center justify-center text-white text-xs font-semibold"
+              style={{ backgroundColor: form.accent_color }}
+            >
+              Accent
+            </div>
+          </div>
+
+          {/* Email Footer */}
+          <div className="space-y-1.5">
+            <Label>Email Footer</Label>
+            <Textarea
+              value={form.email_footer}
+              onChange={set('email_footer')}
+              placeholder="Thank you for your business! Visit us at printshop.com"
+              rows={3}
+            />
+            <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              Appears at the bottom of invoice emails sent to customers.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Company Info ─────────────────────────────────────────────────────── */}
       <Card>
         <CardHeader className="pb-2">
           <div className="flex items-center gap-2">
@@ -192,24 +315,6 @@ export default function SettingsPage() {
           <div className="space-y-1.5">
             <Label>Company Name <span className="text-red-500">*</span></Label>
             <Input value={form.name} onChange={set('name')} placeholder="Shines Print Co." />
-          </div>
-
-          {/* Logo */}
-          <div className="space-y-1.5">
-            <Label>Logo URL</Label>
-            <Input value={form.logo_url} onChange={set('logo_url')} placeholder="https://yoursite.com/logo.png" />
-            {form.logo_url && (
-              <div className="mt-2 flex items-center gap-3">
-                <img
-                  src={form.logo_url}
-                  alt="Logo preview"
-                  className="h-12 object-contain rounded border p-1"
-                  style={{ borderColor: 'hsl(var(--border))' }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                />
-                <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>Logo preview</span>
-              </div>
-            )}
           </div>
 
           <div className="space-y-1.5">
@@ -254,7 +359,7 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Invoice defaults */}
+      {/* ── Invoice Defaults ──────────────────────────────────────────────────── */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Invoice Defaults</CardTitle>
@@ -275,7 +380,7 @@ export default function SettingsPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Default Payment Terms</Label>
-              <Select value={form.default_payment_terms} onValueChange={setSelect('default_payment_terms')}>
+              <Select value={form.default_payment_terms} onValueChange={setVal('default_payment_terms')}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {PAYMENT_TERMS.map((t) => (
@@ -308,7 +413,7 @@ export default function SettingsPage() {
               rows={3}
             />
             <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Shown in the Terms & Conditions section of every invoice.
+              Shown in the Terms &amp; Conditions section of every invoice.
             </p>
           </div>
         </CardContent>
