@@ -1,13 +1,14 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   X, Search, Plus, Trash2, ChevronDown, Package, ShoppingCart,
   Layers, Tag, Settings, Scissors, Ticket, Droplets, Shirt,
   Printer, Paintbrush, Palette, Wrench, Zap, Star, Circle,
   Hash, Box, Truck, Award, Grid3x3, Pen, Flame, Sparkles, Diamond,
-  ChevronUp, Pencil,
+  ChevronUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, db } from '@/lib/supabase';
@@ -61,6 +62,29 @@ function getPriceForQty(tiers: ServiceItemTier[], qty: number): number {
 
 function genTempId() {
   return `tmp_${Math.random().toString(36).slice(2)}`;
+}
+
+function QtyInput({ value, onChange, className }: { value: number; onChange: (n: number) => void; className?: string }) {
+  const [raw, setRaw] = useState(value === 0 ? '' : String(value));
+  useEffect(() => { setRaw(value === 0 ? '' : String(value)); }, [value]);
+  return (
+    <Input
+      type="text"
+      inputMode="numeric"
+      className={className}
+      placeholder="0"
+      value={raw}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (/^\d*$/.test(v)) {
+          setRaw(v);
+          const n = parseInt(v);
+          if (!isNaN(n)) onChange(n);
+        }
+      }}
+      onBlur={() => { if (!raw) { setRaw(value === 0 ? '' : String(value)); } }}
+    />
+  );
 }
 
 // ── Line Item Types ───────────────────────────────────────────────────────────
@@ -155,7 +179,7 @@ interface AddProductDrawerProps {
 function AddProductDrawer({ products, onAdd, onClose }: AddProductDrawerProps) {
   const [search, setSearch] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [qty, setQty] = useState(1);
+  const [qty, setQty] = useState('');
   const [unitPrice, setUnitPrice] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('');
@@ -184,7 +208,7 @@ function AddProductDrawer({ products, onAdd, onClose }: AddProductDrawerProps) {
       lineType: 'product',
       productId: selectedProduct?.id ?? null,
       description: description || selectedProduct?.name || 'Product',
-      qty,
+      qty: parseInt(qty) || 0,
       unit_price: parseFloat(unitPrice) || 0,
       color,
       size,
@@ -277,16 +301,17 @@ function AddProductDrawer({ products, onAdd, onClose }: AddProductDrawerProps) {
             <div className="space-y-1">
               <Label className="text-xs font-semibold">How many pieces?</Label>
               <Input
-                type="number" min={1} className="h-10 text-lg font-bold"
+                type="text" inputMode="numeric" className="h-10 text-lg font-bold"
+                placeholder="0"
                 value={qty}
-                onChange={(e) => setQty(parseInt(e.target.value) || 1)}
+                onChange={(e) => { if (/^\d*$/.test(e.target.value)) setQty(e.target.value); }}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <Label className="text-xs">Unit Price ($)</Label>
-                <Input className="h-8 text-sm" type="number" min={0} step={0.01} value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} placeholder="0.00" />
+                <Label className="text-xs">Unit Price <span className="font-normal" style={{ color: 'hsl(var(--muted-foreground))' }}>(optional)</span></Label>
+                <Input className="h-8 text-sm" type="text" inputMode="decimal" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} placeholder="0.00" />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">Color</Label>
@@ -307,13 +332,13 @@ function AddProductDrawer({ products, onAdd, onClose }: AddProductDrawerProps) {
               <Textarea className="text-sm" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Internal notes…" />
             </div>
 
-            {qty > 0 && (parseFloat(unitPrice) || 0) > 0 && (
+            {(parseInt(qty) || 0) > 0 && (parseFloat(unitPrice) || 0) > 0 && (
               <div
                 className="rounded-lg px-3 py-2 text-sm flex items-center justify-between"
                 style={{ backgroundColor: 'hsl(218 91% 57% / 0.08)', color: 'hsl(218 91% 57%)' }}
               >
                 <span>Line Total</span>
-                <span className="font-bold">{formatCurrency(qty * (parseFloat(unitPrice) || 0))}</span>
+                <span className="font-bold">{formatCurrency((parseInt(qty) || 0) * (parseFloat(unitPrice) || 0))}</span>
               </div>
             )}
           </div>
@@ -336,22 +361,30 @@ function AddProductDrawer({ products, onAdd, onClose }: AddProductDrawerProps) {
 interface AddServiceDrawerProps {
   serviceGroups: ServiceGroupWithItems[];
   productLines: ProductLineItem[];
+  preLinkedProduct?: ProductLineItem;
   onAdd: (item: ServiceLineItem | FeeLineItem) => void;
   onClose: () => void;
 }
 
-function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddServiceDrawerProps) {
+function AddServiceDrawer({ serviceGroups, productLines, preLinkedProduct, onAdd, onClose }: AddServiceDrawerProps) {
   const [mode, setMode] = useState<'service' | 'fee'>('service');
-  const [selectedGroupId, setSelectedGroupId] = useState<string>(serviceGroups[0]?.id ?? '');
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(() => serviceGroups[0]?.id ?? '');
   const [selectedItem, setSelectedItem] = useState<ServiceItemWithTiers | null>(null);
-  const [linkToTempId, setLinkToTempId] = useState<string>('');
-  const [qty, setQty] = useState(1);
+
+  useEffect(() => {
+    if (serviceGroups.length > 0) {
+      const stillValid = serviceGroups.some((g) => g.id === selectedGroupId);
+      if (!stillValid) { setSelectedGroupId(serviceGroups[0].id); setSelectedItem(null); }
+    }
+  }, [serviceGroups, selectedGroupId]);
+  const [linkToTempId, setLinkToTempId] = useState<string>(preLinkedProduct?.tempId ?? '');
+  const [qty, setQty] = useState(preLinkedProduct ? String(preLinkedProduct.qty) : '');
   const [description, setDescription] = useState('');
   const [location, setLocation] = useState('');
 
   // Fee fields
   const [feeDescription, setFeeDescription] = useState('');
-  const [feeQty, setFeeQty] = useState(1);
+  const [feeQty, setFeeQty] = useState(preLinkedProduct ? String(preLinkedProduct.qty) : '');
   const [feePrice, setFeePrice] = useState('');
 
   const activeGroup = serviceGroups.find((g) => g.id === selectedGroupId) ?? serviceGroups[0];
@@ -359,32 +392,34 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
   const selectServiceItem = (item: ServiceItemWithTiers) => {
     setSelectedItem(item);
     setDescription(item.name);
-    // Inherit qty from linked product
-    if (linkToTempId) {
-      const linked = productLines.find((p) => p.tempId === linkToTempId);
-      if (linked) setQty(linked.qty);
+    // Auto-fill qty from linked product, or from MOQ minimum
+    const linkedQty = preLinkedProduct?.qty ?? productLines.find((p) => p.tempId === linkToTempId)?.qty;
+    if (linkedQty != null) {
+      setQty(String(linkedQty));
     } else if (item.pricing_type === 'moq' && item.tiers.length) {
-      setQty(Math.min(...item.tiers.map((t) => t.min_qty)));
+      setQty(String(Math.min(...item.tiers.map((t) => t.min_qty))));
     } else {
-      setQty(1);
+      setQty('1');
     }
   };
+
+  const qtyNum = parseInt(qty) || 0;
 
   const unitPrice = selectedItem
     ? selectedItem.pricing_type === 'flat'
       ? (selectedItem.flat_price ?? 0)
-      : getPriceForQty(selectedItem.tiers, qty)
+      : getPriceForQty(selectedItem.tiers, qtyNum)
     : 0;
 
   const activeTier = selectedItem?.pricing_type === 'moq'
     ? [...(selectedItem?.tiers ?? [])].sort((a, b) => a.min_qty - b.min_qty).reduce<ServiceItemTier | null>((best, t) => {
-        if (qty >= t.min_qty) return t;
+        if (qtyNum >= t.min_qty) return t;
         return best;
       }, null)
     : null;
 
   const detectedPrice = selectedItem?.pricing_type === 'moq'
-    ? detectPrice(selectedItem.tiers, qty)
+    ? detectPrice(selectedItem.tiers, qtyNum)
     : null;
 
   const handleAddService = () => {
@@ -396,7 +431,7 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
       serviceItemId: selectedItem.id,
       description,
       location,
-      qty,
+      qty: qtyNum,
       unit_price: unitPrice,
       pricing_type: selectedItem.pricing_type,
       tiers: selectedItem.tiers,
@@ -413,7 +448,7 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
       tempId: genTempId(),
       lineType: 'fee',
       description: feeDescription,
-      qty: feeQty,
+      qty: parseInt(feeQty) || 0,
       unit_price: parseFloat(feePrice) || 0,
       taxable: false,
     });
@@ -459,22 +494,32 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {mode === 'service' && (
           <>
-            {/* Link to product */}
-            {productLines.length > 0 && (
+            {/* Link to product — hidden when pre-linked from product row */}
+            {preLinkedProduct ? (
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                style={{ backgroundColor: 'hsl(218 91% 57% / 0.08)', color: 'hsl(218 91% 57%)' }}
+              >
+                <Package className="h-3.5 w-3.5 shrink-0" />
+                Adding to: <span className="font-bold truncate">{preLinkedProduct.description}</span>
+                <span className="ml-auto shrink-0 opacity-60">× {preLinkedProduct.qty.toLocaleString()}</span>
+              </div>
+            ) : productLines.length > 0 && (
               <div className="space-y-1">
                 <Label className="text-xs">Link to product (optional)</Label>
-                <Select value={linkToTempId} onValueChange={(v) => {
-                  setLinkToTempId(v);
-                  if (v) {
-                    const linked = productLines.find((p) => p.tempId === v);
-                    if (linked && selectedItem) setQty(linked.qty);
+                <Select value={linkToTempId || "__none__"} onValueChange={(v) => {
+                  const val = v === "__none__" ? "" : v;
+                  setLinkToTempId(val);
+                  if (val) {
+                    const linked = productLines.find((p) => p.tempId === val);
+                    if (linked && selectedItem) setQty(String(linked.qty));
                   }
                 }}>
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue placeholder="None (standalone)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None (standalone)</SelectItem>
+                    <SelectItem value="__none__">None (standalone)</SelectItem>
                     {productLines.map((p) => (
                       <SelectItem key={p.tempId} value={p.tempId}>
                         {p.description} × {p.qty.toLocaleString()}
@@ -485,23 +530,30 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
               </div>
             )}
 
-            {/* Group tabs */}
+            {/* Group pills */}
             <div className="flex gap-1.5 flex-wrap">
-              {serviceGroups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  className="text-xs px-2.5 py-1 rounded-full border font-medium transition-colors"
-                  style={{
-                    backgroundColor: selectedGroupId === g.id ? g.color : 'transparent',
-                    borderColor: selectedGroupId === g.id ? g.color : 'hsl(var(--border))',
-                    color: selectedGroupId === g.id ? 'white' : 'hsl(var(--foreground))',
-                  }}
-                  onClick={() => { setSelectedGroupId(g.id); setSelectedItem(null); }}
-                >
-                  {g.name}
-                </button>
-              ))}
+              {serviceGroups.map((g) => {
+                const active = selectedGroupId === g.id;
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium transition-colors"
+                    style={{
+                      backgroundColor: active ? g.color : 'transparent',
+                      borderColor: active ? g.color : 'hsl(var(--border))',
+                      color: active ? 'white' : 'hsl(var(--foreground))',
+                    }}
+                    onClick={() => { setSelectedGroupId(g.id); setSelectedItem(null); }}
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: active ? 'rgba(255,255,255,0.7)' : g.color }}
+                    />
+                    {g.name}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Items list */}
@@ -565,11 +617,12 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
                 <div className="space-y-1">
                   <Label className="text-xs font-semibold">Quantity</Label>
                   <Input
-                    type="number"
-                    min={selectedItem.pricing_type === 'moq' && selectedItem.tiers.length ? Math.min(...selectedItem.tiers.map((t) => t.min_qty)) : 1}
+                    type="text"
+                    inputMode="numeric"
                     className="h-10 text-lg font-bold"
+                    placeholder="0"
                     value={qty}
-                    onChange={(e) => setQty(parseInt(e.target.value) || 1)}
+                    onChange={(e) => { if (/^\d*$/.test(e.target.value)) setQty(e.target.value); }}
                   />
                 </div>
 
@@ -621,7 +674,7 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
 
                 <div className="flex items-center justify-between text-sm font-medium pt-1">
                   <span style={{ color: 'hsl(var(--muted-foreground))' }}>Line Total</span>
-                  <span className="font-bold">{formatCurrency(unitPrice * qty)}</span>
+                  <span className="font-bold">{formatCurrency(unitPrice * qtyNum)}</span>
                 </div>
               </div>
             )}
@@ -637,20 +690,20 @@ function AddServiceDrawer({ serviceGroups, productLines, onAdd, onClose }: AddSe
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label className="text-xs">Quantity</Label>
-                <Input type="number" min={1} className="h-8 text-sm" value={feeQty} onChange={(e) => setFeeQty(parseInt(e.target.value) || 1)} />
+                <Input type="text" inputMode="numeric" className="h-8 text-sm" placeholder="0" value={feeQty} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setFeeQty(e.target.value); }} />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">Price Each ($)</Label>
-                <Input type="number" min={0} step={0.01} className="h-8 text-sm" value={feePrice} onChange={(e) => setFeePrice(e.target.value)} placeholder="0.00" />
+                <Input type="text" inputMode="decimal" className="h-8 text-sm" value={feePrice} onChange={(e) => setFeePrice(e.target.value)} placeholder="0.00" />
               </div>
             </div>
-            {feeQty > 0 && (parseFloat(feePrice) || 0) > 0 && (
+            {(parseInt(feeQty) || 0) > 0 && (parseFloat(feePrice) || 0) > 0 && (
               <div
                 className="rounded-lg px-3 py-2 text-sm flex items-center justify-between"
                 style={{ backgroundColor: 'hsl(38 92% 50% / 0.08)', color: 'hsl(38 92% 35%)' }}
               >
                 <span>Total</span>
-                <span className="font-bold">{formatCurrency(feeQty * (parseFloat(feePrice) || 0))}</span>
+                <span className="font-bold">{formatCurrency((parseInt(feeQty) || 0) * (parseFloat(feePrice) || 0))}</span>
               </div>
             )}
           </div>
@@ -683,9 +736,168 @@ interface OrderCanvasProps {
   serviceGroups: ServiceGroupWithItems[];
   onRemove: (tempId: string) => void;
   onUpdateQty: (tempId: string, qty: number) => void;
+  onAddService: (parentTempId: string) => void;
 }
 
-function OrderCanvas({ items, serviceGroups, onRemove, onUpdateQty }: OrderCanvasProps) {
+function ProductCard({
+  product,
+  children,
+  onRemove,
+  onUpdateQty,
+  onAddService,
+  renderServiceOrFee,
+}: {
+  product: ProductLineItem;
+  children: ServiceLineItem[];
+  onRemove: (id: string) => void;
+  onUpdateQty: (id: string, n: number) => void;
+  onAddService: (id: string) => void;
+  renderServiceOrFee: (item: ServiceLineItem | FeeLineItem, indent?: boolean) => React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const isHeader = product.unit_price === 0;
+
+  if (isHeader) {
+    return (
+      <div
+        className="rounded-lg overflow-hidden border"
+        style={{ borderLeft: '3px solid hsl(218 91% 57%)', borderColor: 'hsl(var(--border))', borderLeftColor: 'hsl(218 91% 57%)' }}
+      >
+        {/* Section header row */}
+        <div
+          className="flex items-center gap-3 px-4 py-2.5"
+          style={{ backgroundColor: 'hsl(var(--muted) / 0.5)' }}
+        >
+          <button
+            type="button"
+            className="p-0.5 rounded transition-colors hover:bg-accent shrink-0"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded
+              ? <ChevronUp className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+              : <ChevronDown className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+            }
+          </button>
+          <p
+            className="flex-1 text-xs font-bold uppercase tracking-widest truncate"
+            style={{ color: 'hsl(var(--foreground))' }}
+          >
+            {product.description}
+          </p>
+          {(product.color || product.size) && (
+            <p className="text-xs shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              {[product.color, product.size].filter(Boolean).join(' / ')}
+            </p>
+          )}
+          <Button
+            variant="ghost" size="icon" className="h-6 w-6 text-red-400 hover:text-red-600 shrink-0"
+            onClick={() => onRemove(product.tempId)}
+            type="button"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        {/* Child services */}
+        {expanded && children.length > 0 && (
+          <div className="border-t px-3 py-3 space-y-2" style={{ borderColor: 'hsl(var(--border))' }}>
+            {children.map((child) => renderServiceOrFee(child, false))}
+          </div>
+        )}
+
+        {/* Add Service button */}
+        <div className="border-t px-4 py-2" style={{ borderColor: 'hsl(218 91% 57% / 0.15)' }}>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-xs font-medium transition-colors hover:opacity-80"
+            style={{ color: 'hsl(218 91% 57%)' }}
+            onClick={() => onAddService(product.tempId)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add Service
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      key={product.tempId}
+      className="rounded-lg border bg-white overflow-hidden"
+      style={{ borderLeft: '3px solid hsl(218 91% 57%)', borderColor: 'hsl(var(--border))', borderLeftColor: 'hsl(218 91% 57%)' }}
+    >
+      {/* Product row */}
+      <div className="flex items-center gap-3 px-4 py-3">
+        <button
+          type="button"
+          className="p-0.5 rounded transition-colors hover:bg-accent shrink-0"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded
+            ? <ChevronUp className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+            : <ChevronDown className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+          }
+        </button>
+        <div
+          className="h-8 w-8 rounded-md flex items-center justify-center shrink-0"
+          style={{ backgroundColor: 'hsl(218 91% 57% / 0.1)' }}
+        >
+          <Package className="h-4 w-4" style={{ color: 'hsl(218 91% 57%)' }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm truncate">{product.description}</p>
+          {(product.color || product.size) && (
+            <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              {[product.color, product.size].filter(Boolean).join(' / ')}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <QtyInput
+            value={product.qty}
+            onChange={(n) => onUpdateQty(product.tempId, n)}
+            className="h-7 w-16 text-sm text-center px-1"
+          />
+          <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>×</span>
+          <span className="text-sm font-medium w-16 text-right">{formatCurrency(product.unit_price)}</span>
+        </div>
+        <span className="text-sm font-bold w-18 text-right shrink-0">
+          {formatCurrency(product.qty * product.unit_price)}
+        </span>
+        <Button
+          variant="ghost" size="icon" className="h-6 w-6 text-red-400 hover:text-red-600 shrink-0"
+          onClick={() => onRemove(product.tempId)}
+          type="button"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {/* Child services */}
+      {expanded && children.length > 0 && (
+        <div className="border-t px-3 py-3 space-y-2" style={{ borderColor: 'hsl(var(--border))' }}>
+          {children.map((child) => renderServiceOrFee(child, false))}
+        </div>
+      )}
+
+      {/* Add Service button */}
+      <div className="border-t px-4 py-2" style={{ borderColor: 'hsl(218 91% 57% / 0.15)' }}>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-xs font-medium transition-colors hover:opacity-80"
+          style={{ color: 'hsl(218 91% 57%)' }}
+          onClick={() => onAddService(product.tempId)}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Service
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OrderCanvas({ items, serviceGroups, onRemove, onUpdateQty, onAddService }: OrderCanvasProps) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 py-20 text-center">
@@ -743,12 +955,10 @@ function OrderCanvas({ items, serviceGroups, onRemove, onUpdateQty }: OrderCanva
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <Input
-            type="number"
-            min={1}
-            className="h-6 w-14 text-xs text-center px-1"
+          <QtyInput
             value={item.qty}
-            onChange={(e) => onUpdateQty(item.tempId, parseInt(e.target.value) || 1)}
+            onChange={(n) => onUpdateQty(item.tempId, n)}
+            className="h-6 w-14 text-xs text-center px-1"
           />
           <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>×</span>
           <span className="text-xs font-medium w-14 text-right">{formatCurrency(currentUnitPrice)}</span>
@@ -774,52 +984,15 @@ function OrderCanvas({ items, serviceGroups, onRemove, onUpdateQty }: OrderCanva
           (i): i is ServiceLineItem => i.lineType === 'service' && i.parentTempId === product.tempId
         );
         return (
-          <div key={product.tempId} className="space-y-1.5">
-            {/* Product row */}
-            <div
-              className="flex items-center gap-3 px-4 py-3 rounded-lg border bg-white"
-              style={{ borderLeft: '3px solid hsl(218 91% 57%)', borderColor: 'hsl(var(--border))', borderLeftColor: 'hsl(218 91% 57%)' }}
-            >
-              <div
-                className="h-8 w-8 rounded-md flex items-center justify-center shrink-0"
-                style={{ backgroundColor: 'hsl(218 91% 57% / 0.1)' }}
-              >
-                <Package className="h-4 w-4" style={{ color: 'hsl(218 91% 57%)' }} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-sm truncate">{product.description}</p>
-                {(product.color || product.size) && (
-                  <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    {[product.color, product.size].filter(Boolean).join(' / ')}
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <Input
-                  type="number"
-                  min={1}
-                  className="h-7 w-16 text-sm text-center px-1"
-                  value={product.qty}
-                  onChange={(e) => onUpdateQty(product.tempId, parseInt(e.target.value) || 1)}
-                />
-                <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>×</span>
-                <span className="text-sm font-medium w-16 text-right">{formatCurrency(product.unit_price)}</span>
-              </div>
-              <span className="text-sm font-bold w-18 text-right shrink-0">
-                {formatCurrency(product.qty * product.unit_price)}
-              </span>
-              <Button
-                variant="ghost" size="icon" className="h-6 w-6 text-red-400 hover:text-red-600 shrink-0"
-                onClick={() => onRemove(product.tempId)}
-                type="button"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-
-            {/* Child services */}
-            {children.map((child) => renderServiceOrFee(child, true))}
-          </div>
+          <ProductCard
+            key={product.tempId}
+            product={product}
+            children={children}
+            onRemove={onRemove}
+            onUpdateQty={onUpdateQty}
+            onAddService={onAddService}
+            renderServiceOrFee={renderServiceOrFee}
+          />
         );
       })}
 
@@ -829,6 +1002,88 @@ function OrderCanvas({ items, serviceGroups, onRemove, onUpdateQty }: OrderCanva
       {/* Fees */}
       {feeItems.map((item) => renderServiceOrFee(item, false))}
     </div>
+  );
+}
+
+// ── New Customer Mini-Modal ───────────────────────────────────────────────────
+
+function NewCustomerModal({ open, onClose, onCreated }: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (c: Customer) => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) { setName(''); setCompany(''); setEmail(''); setPhone(''); }
+  }, [open]);
+
+  const save = async () => {
+    if (!name.trim()) { toast.error('Name is required'); return; }
+    setSaving(true);
+    try {
+      const { data, error } = await db.from('customers').insert({
+        name: name.trim(),
+        company: company.trim() || null,
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+        address: null, city: null, state: null, zip: null, notes: null,
+      }).select('*').single();
+      if (error) throw error;
+      qc.invalidateQueries({ queryKey: ['customers'] });
+      toast.success('Customer added');
+      onCreated(data as Customer);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create customer');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[300] flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.45)' }}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4" style={{ boxShadow: '0 25px 50px rgba(0,0,0,0.25)' }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+          <h2 className="font-bold text-base font-heading">New Customer</h2>
+          <button type="button" onClick={onClose} className="p-1 rounded-md hover:bg-accent transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Name <span className="text-red-500">*</span></Label>
+            <Input className="h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" autoFocus />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Company</Label>
+            <Input className="h-9" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company name" />
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <Label className="text-xs">Email</Label>
+              <Input className="h-9" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@example.com" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Phone</Label>
+              <Input className="h-9" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 000-0000" />
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 px-5 pb-5">
+          <Button variant="outline" className="flex-1" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button className="flex-1" onClick={save} disabled={saving} style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+            {saving ? 'Adding…' : 'Add Customer'}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -851,13 +1106,10 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
   const orderNumber = useMemo(() => editOrder?.order_number ?? generateOrderNumber(), [editOrder]);
 
   // Customer
-  const [customerMode, setCustomerMode] = useState<'select' | 'inline'>('select');
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [custName, setCustName] = useState('');
-  const [custEmail, setCustEmail] = useState('');
-  const [custPhone, setCustPhone] = useState('');
-  const [custCompany, setCustCompany] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [custDropOpen, setCustDropOpen] = useState(false);
   const [custSearch, setCustSearch] = useState('');
+  const [newCustOpen, setNewCustOpen] = useState(false);
 
   // Order Details
   const [dueDate, setDueDate] = useState('');
@@ -876,6 +1128,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
 
   // Right-panel drawers
   const [drawer, setDrawer] = useState<'product' | 'service' | null>(null);
+  const [drawerParentId, setDrawerParentId] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
 
@@ -885,12 +1138,12 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
   useEffect(() => {
     if (!open) return;
     if (editOrder) {
-      setCustomerMode(editOrder.customer_id ? 'select' : 'inline');
-      setSelectedCustomerId(editOrder.customer_id ?? '');
-      setCustName(editOrder.customer_name ?? '');
-      setCustEmail(editOrder.customer_email ?? '');
-      setCustPhone(editOrder.customer_phone ?? '');
-      setCustCompany(editOrder.customer_company ?? '');
+      const existingCust = editOrder.customer_id
+        ? (customers.find((c) => c.id === editOrder.customer_id) ?? null)
+        : editOrder.customer_name
+          ? { id: '', name: editOrder.customer_name, email: editOrder.customer_email, phone: editOrder.customer_phone, company: editOrder.customer_company } as Customer
+          : null;
+      setSelectedCustomer(existingCust);
       setDueDate(editOrder.due_date ?? '');
       setNotes(editOrder.notes ?? '');
       setRefNumber('');
@@ -898,31 +1151,100 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
       setDiscountType(editOrder.discount_type ?? 'percent');
       setDiscountValue(String(editOrder.discount_value ?? ''));
       setTaxRate(String(editOrder.tax_rate ?? ''));
-      setLineItems(
-        (editOrder.order_items ?? []).map((oi) => ({
+      // Reconstruct parent/child hierarchy from saved order_items
+      const rawItems = (editOrder.order_items ?? []) as (OrderItem & {
+        line_type?: 'product' | 'service' | 'fee';
+        product_id?: string | null;
+        service_item_id?: string | null;
+        parent_order_item_id?: string | null;
+      })[];
+
+      // Map db item id -> tempId for products so services can reference them
+      const dbIdToTempId: Record<string, string> = {};
+
+      const productItems: ProductLineItem[] = rawItems
+        .filter((oi) => oi.line_type === 'product')
+        .map((oi) => {
+          const tempId = genTempId();
+          dbIdToTempId[oi.id] = tempId;
+          return {
+            tempId,
+            lineType: 'product' as const,
+            productId: oi.product_id ?? null,
+            description: oi.description,
+            qty: oi.qty,
+            unit_price: oi.unit_price,
+            color: (oi as unknown as { color?: string }).color ?? '',
+            size: (oi as unknown as { size?: string }).size ?? '',
+            imageUrl: (oi as unknown as { image_url?: string }).image_url ?? '',
+            notes: '',
+            taxable: oi.taxable,
+          };
+        });
+
+      const serviceItems: ServiceLineItem[] = rawItems
+        .filter((oi) => oi.line_type === 'service' || (!oi.line_type && !oi.product_id))
+        .map((oi) => {
+          const parentTempId = oi.parent_order_item_id
+            ? (dbIdToTempId[oi.parent_order_item_id] ?? null)
+            : null;
+          return {
+            tempId: genTempId(),
+            lineType: 'service' as const,
+            parentTempId,
+            serviceItemId: oi.service_item_id ?? oi.item_id ?? '',
+            description: oi.description,
+            location: oi.decoration_location ?? '',
+            qty: oi.qty,
+            unit_price: oi.unit_price,
+            pricing_type: 'flat' as const,
+            tiers: [],
+            icon: null,
+            color: null,
+            taxable: oi.taxable,
+          };
+        });
+
+      const feeItems: FeeLineItem[] = rawItems
+        .filter((oi) => oi.line_type === 'fee')
+        .map((oi) => ({
           tempId: genTempId(),
-          lineType: 'service' as const,
-          parentTempId: null,
-          serviceItemId: oi.item_id ?? '',
+          lineType: 'fee' as const,
           description: oi.description,
-          location: oi.decoration_location ?? '',
           qty: oi.qty,
           unit_price: oi.unit_price,
-          pricing_type: 'flat' as const,
-          tiers: [],
-          icon: null,
-          color: null,
           taxable: oi.taxable,
-        }))
-      );
+        }));
+
+      // Fall back: if no typed items exist (old schema), treat everything as service
+      if (productItems.length === 0 && feeItems.length === 0 && rawItems.length > 0) {
+        setLineItems(
+          rawItems.map((oi) => ({
+            tempId: genTempId(),
+            lineType: 'service' as const,
+            parentTempId: null,
+            serviceItemId: oi.item_id ?? '',
+            description: oi.description,
+            location: oi.decoration_location ?? '',
+            qty: oi.qty,
+            unit_price: oi.unit_price,
+            pricing_type: 'flat' as const,
+            tiers: [],
+            icon: null,
+            color: null,
+            taxable: oi.taxable,
+          }))
+        );
+      } else {
+        setLineItems([...productItems, ...serviceItems, ...feeItems]);
+      }
     } else {
-      setCustomerMode('select');
-      setSelectedCustomerId('');
-      setCustName(''); setCustEmail(''); setCustPhone(''); setCustCompany('');
+      setSelectedCustomer(null);
       setDueDate(''); setNotes(''); setRefNumber('');
       setDepositAmount(''); setDiscountType('percent'); setDiscountValue(''); setTaxRate('');
       setLineItems([]);
       setDrawer(null);
+      setDrawerParentId(null);
     }
   }, [open, editOrder]);
 
@@ -938,25 +1260,13 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
   const tax = calcTax(sub - disc, parseFloat(taxRate) || 0);
   const total = sub - disc + tax;
 
-  const resolveCustomer = () => {
-    if (customerMode === 'select' && selectedCustomerId) {
-      const c = customers.find((x) => x.id === selectedCustomerId);
-      return {
-        customer_id: c?.id ?? null,
-        customer_name: c?.name ?? null,
-        customer_email: c?.email ?? null,
-        customer_phone: c?.phone ?? null,
-        customer_company: c?.company ?? null,
-      };
-    }
-    return {
-      customer_id: null,
-      customer_name: custName || null,
-      customer_email: custEmail || null,
-      customer_phone: custPhone || null,
-      customer_company: custCompany || null,
-    };
-  };
+  const resolveCustomer = () => ({
+    customer_id: selectedCustomer?.id || null,
+    customer_name: selectedCustomer?.name ?? null,
+    customer_email: selectedCustomer?.email ?? null,
+    customer_phone: selectedCustomer?.phone ?? null,
+    customer_company: selectedCustomer?.company ?? null,
+  });
 
   const filteredCustomers = custSearch.trim()
     ? customers.filter((c) =>
@@ -987,19 +1297,16 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
   };
 
   const save = async () => {
+    if (!selectedCustomer) {
+      toast.error('Please select a customer'); return;
+    }
     const cust = resolveCustomer();
-    if (!cust.customer_name && !cust.customer_id) {
-      toast.error('Customer name is required'); return;
-    }
-    if (lineItems.length === 0) {
-      toast.error('Add at least one item to the order'); return;
-    }
     setSaving(true);
     try {
       const orderData = {
         ...cust,
         order_number: orderNumber,
-        status: editOrder?.status ?? 'new' as const,
+        status: editOrder?.status ?? 'inquiry' as const,
         due_date: dueDate || null,
         notes: notes || null,
         image_url: null,
@@ -1057,7 +1364,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
             order_id: orderId!,
             line_type: 'service',
             product_id: null,
-            service_item_id: svcItem.serviceItemId,
+            service_item_id: svcItem.serviceItemId || null,
             parent_order_item_id: parentDbId,
             description: svcItem.description,
             qty: svcItem.qty,
@@ -1104,10 +1411,10 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
     }
   };
 
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-white flex flex-col">
+  const portal = createPortal(
+    <div className="fixed inset-0 z-[200] bg-white flex flex-col">
       {/* Header bar */}
       <div
         className="flex items-center justify-between px-6 shrink-0 border-b"
@@ -1148,87 +1455,99 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           style={{ width: 420, borderColor: 'hsl(var(--border))' }}
         >
           {/* Section 1 — Customer */}
-          <section className="px-5 py-4 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
-            <h3 className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: 'hsl(var(--muted-foreground))' }}>Customer</h3>
-            <div className="flex gap-1.5 mb-3">
-              {(['select', 'inline'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className="text-xs px-3 py-1.5 rounded-md border font-medium transition-colors"
-                  style={{
-                    backgroundColor: customerMode === mode ? 'hsl(218 91% 57%)' : 'white',
-                    color: customerMode === mode ? 'white' : 'hsl(var(--foreground))',
-                    borderColor: 'hsl(var(--border))',
-                  }}
-                  onClick={() => setCustomerMode(mode)}
-                >
-                  {mode === 'select' ? 'Existing ▼' : 'New +'}
-                </button>
-              ))}
-            </div>
+          <section className="px-5 py-3 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+            <h3 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'hsl(var(--muted-foreground))' }}>Customer</h3>
 
-            {customerMode === 'select' ? (
-              <div className="space-y-1.5">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
-                  <Input
-                    className="pl-8 h-8 text-sm"
-                    placeholder="Search customers…"
-                    value={custSearch}
-                    onChange={(e) => setCustSearch(e.target.value)}
-                  />
-                </div>
-                <div className="max-h-44 overflow-y-auto rounded-md border" style={{ borderColor: 'hsl(var(--border))' }}>
-                  {filteredCustomers.length === 0 ? (
-                    <p className="text-xs text-center py-4" style={{ color: 'hsl(var(--muted-foreground))' }}>No customers found</p>
-                  ) : (
-                    filteredCustomers.map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2 border-b last:border-b-0"
-                        style={{
-                          borderColor: 'hsl(var(--border))',
-                          backgroundColor: selectedCustomerId === c.id ? 'hsl(218 91% 57% / 0.08)' : undefined,
-                        }}
-                        onClick={() => setSelectedCustomerId(c.id)}
-                      >
-                        <div
-                          className="h-6 w-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
-                          style={{ backgroundColor: 'hsl(218 91% 57%)' }}
-                        >
-                          {c.name[0]?.toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="font-medium truncate">{c.name}</p>
-                          {c.company && <p className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{c.company}</p>}
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <Label className="text-xs">Name <span className="text-red-500">*</span></Label>
-                  <Input className="h-8 text-sm" value={custName} onChange={(e) => setCustName(e.target.value)} placeholder="Full name" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Company</Label>
-                  <Input className="h-8 text-sm" value={custCompany} onChange={(e) => setCustCompany(e.target.value)} placeholder="Company" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Email</Label>
-                  <Input className="h-8 text-sm" type="email" value={custEmail} onChange={(e) => setCustEmail(e.target.value)} placeholder="email@example.com" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Phone</Label>
-                  <Input className="h-8 text-sm" value={custPhone} onChange={(e) => setCustPhone(e.target.value)} placeholder="(555) 000-0000" />
-                </div>
-              </div>
+            {/* Click-outside backdrop */}
+            {custDropOpen && (
+              <div className="fixed inset-0 z-10" onClick={() => { setCustDropOpen(false); setCustSearch(''); }} />
             )}
+
+            <div className="relative z-20">
+              {/* Trigger — div when customer selected (avoids nested button), button when empty */}
+              {selectedCustomer ? (
+                <div
+                  className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border text-sm text-left"
+                  style={{ borderColor: 'hsl(var(--border))' }}
+                >
+                  <div className="h-6 w-6 rounded-full flex items-center justify-center text-white font-bold shrink-0 text-[11px]" style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+                    {selectedCustomer.name[0]?.toUpperCase()}
+                  </div>
+                  <span className="font-medium truncate flex-1 text-sm">{selectedCustomer.name}</span>
+                  {selectedCustomer.company && (
+                    <span className="text-xs shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>{selectedCustomer.company}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="ml-1 p-0.5 rounded hover:bg-accent shrink-0"
+                    onClick={() => { setSelectedCustomer(null); setCustDropOpen(false); }}
+                  >
+                    <X className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border text-sm text-left transition-colors"
+                  style={{ borderColor: custDropOpen ? 'hsl(218 91% 57%)' : 'hsl(var(--border))' }}
+                  onClick={() => setCustDropOpen((v) => !v)}
+                >
+                  <span className="flex-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Select customer…</span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                </button>
+              )}
+
+              {/* Dropdown panel */}
+              {custDropOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg border shadow-lg z-20 overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
+                  <div className="px-2 pt-2 pb-1">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                      <Input
+                        className="pl-6 h-7 text-xs"
+                        placeholder="Search customers…"
+                        value={custSearch}
+                        onChange={(e) => setCustSearch(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-44 overflow-y-auto">
+                    {filteredCustomers.length === 0 ? (
+                      <p className="text-xs text-center py-3" style={{ color: 'hsl(var(--muted-foreground))' }}>No customers found</p>
+                    ) : (
+                      filteredCustomers.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2"
+                          onClick={() => { setSelectedCustomer(c); setCustDropOpen(false); setCustSearch(''); }}
+                        >
+                          <div className="h-6 w-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+                            {c.name[0]?.toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{c.name}</p>
+                            {c.company && <p className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{c.company}</p>}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <div className="border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors hover:bg-accent"
+                      style={{ color: 'hsl(218 91% 57%)' }}
+                      onClick={() => { setCustDropOpen(false); setCustSearch(''); setNewCustOpen(true); }}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      New Customer…
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </section>
 
           {/* Section 2 — Order Details */}
@@ -1288,7 +1607,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
                       >$</button>
                       <Input
                         className="h-8 text-sm flex-1"
-                        type="number" min={0} step={0.01}
+                        type="text" inputMode="decimal"
                         value={discountValue}
                         onChange={(e) => setDiscountValue(e.target.value)}
                         placeholder="0"
@@ -1297,7 +1616,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">Tax Rate (%)</Label>
-                    <Input className="h-8 text-sm" type="number" min={0} step={0.01} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0.00" />
+                    <Input className="h-8 text-sm" type="text" inputMode="decimal" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0.00" />
                   </div>
                 </div>
               </div>
@@ -1305,48 +1624,45 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           </section>
 
           {/* Section 4 — Summary (sticky bottom) */}
-          <div className="mt-auto sticky bottom-0 bg-white border-t" style={{ borderColor: 'hsl(var(--border))' }}>
-            <div
-              className="mx-4 my-4 rounded-xl p-4 space-y-2 text-sm"
-              style={{ backgroundColor: 'hsl(205 98% 13%)', color: 'white' }}
-            >
-              <p className="text-xs font-bold uppercase tracking-wider opacity-60 mb-3">
-                Order Summary · {lineItems.length} item{lineItems.length !== 1 ? 's' : ''}
+          <div className="mt-auto sticky bottom-0 border-t" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>
+            <div className="px-5 py-4 space-y-2 text-sm">
+              <p className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                Summary · {lineItems.length} item{lineItems.length !== 1 ? 's' : ''}
               </p>
-              <div className="flex justify-between">
-                <span className="opacity-70">Subtotal</span>
-                <span className="font-medium">{formatCurrency(sub)}</span>
+              <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                <span>Subtotal</span>
+                <span className="font-medium" style={{ color: 'hsl(var(--foreground))' }}>{formatCurrency(sub)}</span>
               </div>
               {disc > 0 && (
-                <div className="flex justify-between">
-                  <span className="opacity-70">Discount</span>
-                  <span className="text-red-300">-{formatCurrency(disc)}</span>
+                <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  <span>Discount</span>
+                  <span className="font-medium text-red-500">-{formatCurrency(disc)}</span>
                 </div>
               )}
               {(parseFloat(taxRate) || 0) > 0 && (
-                <div className="flex justify-between">
-                  <span className="opacity-70">Tax ({taxRate}%)</span>
-                  <span>{formatCurrency(tax)}</span>
+                <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  <span>Tax ({taxRate}%)</span>
+                  <span className="font-medium" style={{ color: 'hsl(var(--foreground))' }}>{formatCurrency(tax)}</span>
                 </div>
               )}
-              <div className="flex justify-between items-center pt-2 mt-1 border-t border-white/20">
+              <div className="flex justify-between items-center pt-3 mt-1 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
                 <span className="font-bold text-base">Total</span>
-                <span className="font-bold text-xl">{formatCurrency(total)}</span>
+                <span className="font-bold text-xl" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(total)}</span>
               </div>
               {/* Deposit */}
-              <div className="pt-2 border-t border-white/10">
-                <Label className="text-xs opacity-60 mb-1 block">Deposit Amount ($)</Label>
+              <div className="pt-2 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+                <Label className="text-xs mb-1 block" style={{ color: 'hsl(var(--muted-foreground))' }}>Deposit Amount ($)</Label>
                 <Input
-                  type="number" min={0} step={0.01}
+                  type="text" inputMode="decimal"
                   value={depositAmount}
                   onChange={(e) => setDepositAmount(e.target.value)}
                   placeholder="0.00"
-                  className="h-8 text-sm bg-white/10 border-white/20 text-white placeholder:text-white/30"
+                  className="h-8 text-sm"
                 />
                 {parseFloat(depositAmount) > 0 && (
-                  <div className="flex justify-between text-xs mt-1.5 opacity-70">
+                  <div className="flex justify-between text-xs mt-1.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
                     <span>Balance due</span>
-                    <span>{formatCurrency(Math.max(0, total - (parseFloat(depositAmount) || 0)))}</span>
+                    <span className="font-semibold" style={{ color: 'hsl(var(--foreground))' }}>{formatCurrency(Math.max(0, total - (parseFloat(depositAmount) || 0)))}</span>
                   </div>
                 )}
               </div>
@@ -1360,7 +1676,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           <div className="flex items-center gap-3 px-6 py-3.5 border-b shrink-0" style={{ borderColor: 'hsl(var(--border))' }}>
             <Button
               size="sm"
-              onClick={() => setDrawer(drawer === 'product' ? null : 'product')}
+              onClick={() => { setDrawerParentId(null); setDrawer(drawer === 'product' ? null : 'product'); }}
               style={{ backgroundColor: 'hsl(218 91% 57%)' }}
             >
               <Package className="h-3.5 w-3.5" /> Add Product
@@ -1368,16 +1684,16 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
             <Button
               size="sm"
               variant="outline"
-              onClick={() => setDrawer(drawer === 'service' ? null : 'service')}
+              onClick={() => { setDrawerParentId(null); setDrawer(drawer === 'service' ? null : 'service'); }}
             >
-              <Plus className="h-3.5 w-3.5" /> Add Service / Fee
+              <Plus className="h-3.5 w-3.5" /> Add Standalone Service / Fee
             </Button>
             {drawer && (
               <button
                 type="button"
                 className="ml-auto text-xs px-2 py-1 rounded border"
                 style={{ borderColor: 'hsl(var(--border))', color: 'hsl(var(--muted-foreground))' }}
-                onClick={() => setDrawer(null)}
+                onClick={() => { setDrawer(null); setDrawerParentId(null); }}
               >
                 <X className="h-3 w-3 inline mr-1" />Close panel
               </button>
@@ -1385,12 +1701,16 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           </div>
 
           {/* Order canvas */}
-          <div className={`flex-1 overflow-y-auto px-6 py-4 transition-all ${drawer ? 'mr-90' : ''}`}>
+          <div className={`flex-1 overflow-y-auto px-6 py-4 transition-all ${drawer ? 'mr-95' : ''}`}>
             <OrderCanvas
               items={lineItems}
               serviceGroups={serviceGroups}
               onRemove={removeLineItem}
               onUpdateQty={updateQty}
+              onAddService={(parentTempId) => {
+                setDrawerParentId(parentTempId);
+                setDrawer('service');
+              }}
             />
           </div>
 
@@ -1398,20 +1718,33 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           {drawer === 'product' && (
             <AddProductDrawer
               products={products}
-              onAdd={(item) => { addLineItem(item); setDrawer(null); }}
-              onClose={() => setDrawer(null)}
+              onAdd={(item) => { addLineItem(item); setDrawer(null); setDrawerParentId(null); }}
+              onClose={() => { setDrawer(null); setDrawerParentId(null); }}
             />
           )}
           {drawer === 'service' && (
             <AddServiceDrawer
               serviceGroups={serviceGroups}
               productLines={productLines}
-              onAdd={(item) => { addLineItem(item); setDrawer(null); }}
-              onClose={() => setDrawer(null)}
+              preLinkedProduct={drawerParentId ? productLines.find((p) => p.tempId === drawerParentId) : undefined}
+              onAdd={(item) => { addLineItem(item); setDrawer(null); setDrawerParentId(null); }}
+              onClose={() => { setDrawer(null); setDrawerParentId(null); }}
             />
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
+  );
+
+  return (
+    <>
+      {portal}
+      <NewCustomerModal
+        open={newCustOpen}
+        onClose={() => setNewCustOpen(false)}
+        onCreated={(c) => { setSelectedCustomer(c); setNewCustOpen(false); }}
+      />
+    </>
   );
 }

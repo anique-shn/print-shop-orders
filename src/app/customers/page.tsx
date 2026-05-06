@@ -241,9 +241,9 @@ export default function CustomersPage() {
       <Card>
         <div className="overflow-x-auto">
           {isLoading ? (
-            <div className="divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
+            <div>
               {[...Array(6)].map((_, i) => (
-                <div key={i} className="flex items-center gap-4 px-6 py-4">
+                <div key={i} className="flex items-center gap-4 px-6 py-4 border-b last:border-b-0" style={{ borderColor: 'hsl(var(--border))' }}>
                   <div className="skeleton-shimmer h-8 w-8 rounded-full" />
                   <div className="skeleton-shimmer h-4 w-36 flex-1" />
                   <div className="skeleton-shimmer h-4 w-40" />

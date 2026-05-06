@@ -19,7 +19,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </main>
         </div>
       </div>
-      <Toaster richColors position="top-right" />
+      <Toaster richColors position="top-right" closeButton />
     </QueryClientProvider>
   );
 }

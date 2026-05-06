@@ -5,14 +5,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Plus, Search, List, LayoutGrid, X, ChevronRight,
-  Pencil, Trash2, ShoppingCart, FileText, Check,
+  Pencil, Trash2, ShoppingCart, FileText, Check, Mail,
+  Bell, Truck, Copy, ExternalLink, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, db } from '@/lib/supabase';
 import {
   formatCurrency, formatDate, generateOrderNumber, generateInvoiceNumber,
-  ORDER_STATUSES, DECORATION_TYPES, DECORATION_LOCATIONS, calcSubtotal,
-  calcDiscount, calcTax,
+  ORDER_STATUSES, ORDER_EMAIL_TEMPLATES, DECORATION_TYPES, DECORATION_LOCATIONS,
+  calcSubtotal, calcDiscount, calcTax,
 } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -150,7 +151,273 @@ async function createInvoiceFromOrder(order: OrderWithItems, qc: ReturnType<type
   }
 }
 
+// ── Email Compose Modal ───────────────────────────────────────────────────────
+
+function EmailComposeModal({
+  open,
+  onClose,
+  order,
+  triggerStatus,
+}: {
+  open: boolean;
+  onClose: () => void;
+  order: OrderWithItems;
+  triggerStatus: string;
+}) {
+  const tpl = ORDER_EMAIL_TEMPLATES[triggerStatus];
+  const trackingInfo = order.tracking_number
+    ? `Tracking: ${order.tracking_number}${order.carrier ? ` via ${order.carrier}` : ''}`
+    : '';
+
+  const fillTemplate = (str: string) =>
+    str
+      .replace(/{customer_name}/g, order.customer_name ?? 'there')
+      .replace(/{order_number}/g, order.order_number)
+      .replace(/{tracking_info}/g, trackingInfo);
+
+  const [to, setTo] = useState('');
+  const [cc, setCc] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+
+  useEffect(() => {
+    if (!open || !tpl) return;
+    setTo(order.customer_email ?? '');
+    setCc('');
+    setSubject(fillTemplate(tpl.subject));
+    setBody(fillTemplate(tpl.body));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, triggerStatus]);
+
+  const openMailto = () => {
+    const params = new URLSearchParams();
+    if (cc) params.set('cc', cc);
+    params.set('subject', subject);
+    params.set('body', body);
+    window.open(`mailto:${to}?${params.toString()}`);
+  };
+
+  const copyBody = () => {
+    navigator.clipboard.writeText(`To: ${to}\nSubject: ${subject}\n\n${body}`);
+    toast.success('Copied to clipboard');
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Mail className="h-4 w-4" style={{ color: 'hsl(218 91% 57%)' }} />
+            Send Status Update
+          </DialogTitle>
+          <DialogDescription>Review and edit before sending.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-1">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">To</Label>
+              <Input className="h-8 text-sm" value={to} onChange={(e) => setTo(e.target.value)} placeholder="client@email.com" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">CC <span className="font-normal text-muted-foreground">(optional)</span></Label>
+              <Input className="h-8 text-sm" value={cc} onChange={(e) => setCc(e.target.value)} placeholder="cc@email.com" />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Subject</Label>
+            <Input className="h-8 text-sm" value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Message</Label>
+            <Textarea className="text-sm" rows={8} value={body} onChange={(e) => setBody(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={copyBody}>
+            <Copy className="h-3.5 w-3.5" /> Copy
+          </Button>
+          <Button size="sm" onClick={openMailto} style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+            <ExternalLink className="h-3.5 w-3.5" /> Open in Email
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Order Detail Panel ────────────────────────────────────────────────────────
+
+type RichOrderItem = OrderItem & {
+  line_type?: 'product' | 'service' | 'fee';
+  product_id?: string | null;
+  service_item_id?: string | null;
+  parent_order_item_id?: string | null;
+};
+
+function ItemsAccordion({ items }: { items: RichOrderItem[] }) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    items.forEach((i) => { if (i.line_type === 'product' || !i.line_type) s.add(i.id); });
+    return s;
+  });
+
+  const toggle = (id: string) =>
+    setExpandedIds((prev) => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+
+  const productItems = items.filter(
+    (i) => i.line_type === 'product'
+  );
+  const standaloneServices = items.filter(
+    (i) => (i.line_type === 'service' || !i.line_type) && !i.parent_order_item_id
+  );
+  const feeItems = items.filter((i) => i.line_type === 'fee');
+
+  const renderServiceRow = (item: RichOrderItem, indent = false) => {
+    const isFee = item.line_type === 'fee';
+    const dotColor = isFee ? 'hsl(38 92% 50%)' : 'hsl(218 91% 57%)';
+    return (
+      <div
+        key={item.id}
+        className="flex items-center gap-3 py-2.5 text-sm"
+      >
+        {indent && (
+          <span
+            className="h-2 w-2 rounded-full shrink-0 ml-1"
+            style={{ backgroundColor: dotColor }}
+          />
+        )}
+        {!indent && isFee && (
+          <span
+            className="h-2 w-2 rounded-full shrink-0"
+            style={{ backgroundColor: dotColor }}
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <p className={`font-medium truncate ${indent ? 'text-xs' : 'text-sm'}`}>{item.description}</p>
+          {item.decoration_location && (
+            <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{item.decoration_location}</p>
+          )}
+        </div>
+        {item.unit_price > 0 && (
+          <div className="text-right shrink-0">
+            <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              {item.qty.toLocaleString()} × {formatCurrency(item.unit_price)}
+            </p>
+            <p className={`font-semibold ${indent ? 'text-xs' : 'text-sm'}`}>{formatCurrency(item.qty * item.unit_price)}</p>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {/* Product items with children */}
+      {productItems.map((product) => {
+        const children = items.filter(
+          (i) => (i.line_type === 'service' || !i.line_type) && i.parent_order_item_id === product.id
+        );
+        const isHeader = product.unit_price === 0;
+        const expanded = expandedIds.has(product.id);
+
+        return (
+          <div
+            key={product.id}
+            className="rounded-lg border overflow-hidden"
+            style={{ borderLeft: '3px solid hsl(218 91% 57%)', borderColor: 'hsl(var(--border))', borderLeftColor: 'hsl(218 91% 57%)' }}
+          >
+            {/* Product row */}
+            <button
+              type="button"
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-accent/50 transition-colors"
+              style={isHeader ? { backgroundColor: 'hsl(var(--muted) / 0.5)' } : undefined}
+              onClick={() => toggle(product.id)}
+            >
+              {isHeader ? (
+                <p className="flex-1 text-xs font-bold uppercase tracking-widest truncate" style={{ color: 'hsl(var(--foreground))' }}>
+                  {product.description}
+                </p>
+              ) : (
+                <>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate">{product.description}</p>
+                    {(product.color || product.size) && (
+                      <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                        {[product.color, product.size].filter(Boolean).join(' / ')}
+                      </p>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0 space-y-0.5 mr-2">
+                    <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                      {product.qty.toLocaleString()} × {formatCurrency(product.unit_price)}
+                    </p>
+                    <p className="text-sm font-bold">{formatCurrency(product.qty * product.unit_price)}</p>
+                  </div>
+                </>
+              )}
+              {children.length > 0 && (
+                expanded
+                  ? <ChevronUp className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  : <ChevronDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />
+              )}
+            </button>
+
+            {/* Child services */}
+            {expanded && children.length > 0 && (
+              <div className="border-t px-4" style={{ borderColor: 'hsl(var(--border))' }}>
+                {children.map((child, idx) => (
+                  <div
+                    key={child.id}
+                    className={idx < children.length - 1 ? 'border-b' : ''}
+                    style={{ borderColor: 'hsl(var(--border))' }}
+                  >
+                    {renderServiceRow(child, true)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Standalone services (no parent) */}
+      {standaloneServices.length > 0 && (
+        <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
+          {standaloneServices.map((item, idx) => (
+            <div
+              key={item.id}
+              className={`px-4 ${idx < standaloneServices.length - 1 ? 'border-b' : ''}`}
+              style={{ borderColor: 'hsl(var(--border))' }}
+            >
+              {renderServiceRow(item, false)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Fee items */}
+      {feeItems.length > 0 && (
+        <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'hsl(38 92% 50% / 0.3)', backgroundColor: 'hsl(38 92% 50% / 0.03)' }}>
+          {feeItems.map((item, idx) => (
+            <div
+              key={item.id}
+              className={`px-4 ${idx < feeItems.length - 1 ? 'border-b' : ''}`}
+              style={{ borderColor: 'hsl(38 92% 50% / 0.3)' }}
+            >
+              {renderServiceRow(item, false)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function OrderDetailPanel({
   order,
@@ -163,14 +430,27 @@ function OrderDetailPanel({
 }) {
   const qc = useQueryClient();
   const [updating, setUpdating] = useState(false);
+  const [notifyStatus, setNotifyStatus] = useState<string | null>(null);
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailStatus, setEmailStatus] = useState('');
+  const [trackingNumber, setTrackingNumber] = useState(order.tracking_number ?? '');
+  const [carrier, setCarrier] = useState(order.carrier ?? '');
+  const [savingTracking, setSavingTracking] = useState(false);
+  const [trackingOpen, setTrackingOpen] = useState(false);
   const router = useRouter();
 
   const moveStatus = async (newStatus: string) => {
+    if (newStatus === order.status) return;
     setUpdating(true);
     try {
-      const { error } = await db.from('orders').update({ status: newStatus }).eq('id', order.id);
-      if (error) throw error;
+      await db.from('orders').update({ status: newStatus }).eq('id', order.id);
+      await db.from('order_status_history').insert({
+        order_id: order.id,
+        from_status: order.status,
+        to_status: newStatus,
+      });
       qc.invalidateQueries({ queryKey: ['orders'] });
+      setNotifyStatus(newStatus);
       toast.success(`Moved to ${ORDER_STATUSES.find((s) => s.value === newStatus)?.label}`);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed');
@@ -184,192 +464,301 @@ function OrderDetailPanel({
     if (id) router.push('/invoices');
   };
 
+  const saveTracking = async () => {
+    setSavingTracking(true);
+    try {
+      await db.from('orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null }).eq('id', order.id);
+      qc.invalidateQueries({ queryKey: ['orders'] });
+      toast.success('Tracking saved');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setSavingTracking(false);
+    }
+  };
+
+  const richItems = (order.order_items ?? []) as RichOrderItem[];
+  // For totals, exclude $0-price product headers
+  const billableItems = richItems.filter((i) => i.unit_price > 0);
   const total = orderTotal(order);
-  const sub = calcSubtotal((order.order_items ?? []).map((i) => ({ qty: i.qty, unit_price: i.unit_price })));
+  const sub = calcSubtotal(billableItems.map((i) => ({ qty: i.qty, unit_price: i.unit_price })));
   const disc = calcDiscount(sub, order.discount_type, order.discount_value);
   const tax = calcTax(sub - disc, order.tax_rate);
 
-  const pipeline = ORDER_STATUSES.filter((s) => s.value !== 'cancelled');
-  const currentIdx = pipeline.findIndex((s) => s.value === order.status);
+  const CARRIERS = ['UPS', 'FedEx', 'USPS', 'DHL', 'Other'];
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex"
-      onClick={onClose}
-    >
-      {/* Backdrop */}
-      <div className="flex-1 bg-black/30" />
-      {/* Panel */}
-      <div
-        className="w-full max-w-lg bg-white h-full overflow-y-auto shadow-2xl flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
+    <>
+      <div className="fixed inset-0 z-40 flex">
+        {/* Backdrop */}
+        <div className="flex-1 bg-black/30" onClick={onClose} />
+
+        {/* Right panel — max-w-xl */}
         <div
-          className="flex items-center justify-between px-6 py-4 border-b"
-          style={{ borderColor: 'hsl(var(--border))' }}
+          className="flex flex-col h-full shadow-2xl overflow-hidden"
+          style={{ width: 'min(100vw, 576px)', backgroundColor: 'hsl(var(--background))' }}
         >
-          <div>
-            <h2 className="font-bold text-lg font-heading">{order.order_number}</h2>
-            <p className="text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              {order.customer_name} {order.customer_company ? `· ${order.customer_company}` : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => onEdit(order)}>
-              <Pencil className="h-3.5 w-3.5" /> Edit
-            </Button>
-            <Button size="sm" onClick={handleCreateInvoice}>
-              <FileText className="h-3.5 w-3.5" /> Invoice
-            </Button>
-            <Button variant="ghost" size="icon" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-
-        {/* Status pipeline */}
-        <div className="px-6 py-4 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
-          <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'hsl(var(--muted-foreground))' }}>
-            Status Pipeline
-          </p>
-          <div className="flex items-center gap-1 flex-wrap">
-            {pipeline.map((s, i) => {
-              const isActive = order.status === s.value;
-              const isDone = currentIdx > i;
-              return (
+          {/* ── Header ── */}
+          <div className="shrink-0 px-6 py-4 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <h2 className="font-bold text-xl font-heading">{order.order_number}</h2>
+                  <StatusBadge status={order.status} />
+                </div>
+                <p className="text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  {order.customer_name ?? '—'}
+                  {order.customer_company ? ` · ${order.customer_company}` : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
-                  key={s.value}
-                  disabled={updating}
-                  onClick={() => moveStatus(s.value)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors border"
-                  style={{
-                    backgroundColor: isActive ? 'hsl(218, 91%, 57%)' : isDone ? 'hsl(152, 74%, 38% / 0.1)' : 'transparent',
-                    color: isActive ? 'white' : isDone ? 'hsl(152, 74%, 28%)' : 'hsl(var(--muted-foreground))',
-                    borderColor: isActive ? 'hsl(218, 91%, 57%)' : isDone ? 'hsl(152, 74%, 38%)' : 'hsl(var(--border))',
-                  }}
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors hover:bg-accent"
+                  style={{ borderColor: 'hsl(var(--border))' }}
+                  onClick={() => onEdit(order)}
                 >
-                  {isDone && <Check className="h-3 w-3" />}
-                  {s.label}
+                  <Pencil className="h-3.5 w-3.5" /> Edit
                 </button>
-              );
-            })}
-            <button
-              disabled={updating}
-              onClick={() => moveStatus('cancelled')}
-              className="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors"
-              style={{
-                backgroundColor: order.status === 'cancelled' ? 'hsl(353, 79%, 55%)' : 'transparent',
-                color: order.status === 'cancelled' ? 'white' : 'hsl(353, 79%, 40%)',
-                borderColor: order.status === 'cancelled' ? 'hsl(353, 79%, 55%)' : 'hsl(353, 79%, 55% / 0.3)',
-              }}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="h-8 w-8 rounded-md flex items-center justify-center hover:bg-accent transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Status Select */}
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-xs font-semibold" style={{ color: 'hsl(var(--muted-foreground))' }}>Status:</span>
+              <Select value={order.status} onValueChange={moveStatus} disabled={updating}>
+                <SelectTrigger className="h-7 text-xs w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ORDER_STATUSES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${s.color}`}>
+                          {s.label}
+                        </span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* ── Body (scrollable) ── */}
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+
+            {/* Notify banner */}
+            {notifyStatus && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl border"
+                style={{ background: '#FFF8EC', borderColor: 'rgba(245,166,35,.4)' }}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Bell className="h-4 w-4 shrink-0" style={{ color: '#F5A623' }} />
+                  <p className="text-xs font-semibold truncate">
+                    Moved to <strong>{ORDER_STATUSES.find(s => s.value === notifyStatus)?.label}</strong>. Notify?
+                  </p>
+                </div>
+                <div className="flex gap-1.5 shrink-0">
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs px-2"
+                    style={{ backgroundColor: '#F5A623' }}
+                    onClick={() => { setEmailStatus(notifyStatus); setEmailOpen(true); setNotifyStatus(null); }}
+                  >
+                    <Mail className="h-3 w-3" /> Email
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 text-xs px-2" onClick={() => setNotifyStatus(null)}>
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Customer info */}
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'hsl(var(--muted-foreground))' }}>Customer</p>
+              <div className="space-y-0.5 text-sm">
+                <p className="font-semibold">{order.customer_name ?? '—'}</p>
+                {order.customer_company && <p style={{ color: 'hsl(var(--muted-foreground))' }}>{order.customer_company}</p>}
+                {order.customer_email && <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{order.customer_email}</p>}
+                {order.customer_phone && <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{order.customer_phone}</p>}
+              </div>
+            </div>
+
+            {/* Dates */}
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Due Date</p>
+                <p className="font-medium">{order.due_date ? formatDate(order.due_date) : '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Created</p>
+                <p className="font-medium">{formatDate(order.created_at)}</p>
+              </div>
+            </div>
+
+            {/* Notes */}
+            {order.notes && (
+              <div className="rounded-lg p-3 text-sm" style={{ backgroundColor: 'hsl(var(--muted))' }}>
+                <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Notes</p>
+                <p className="leading-relaxed">{order.notes}</p>
+              </div>
+            )}
+
+            {/* Line Items */}
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                Line Items{richItems.length > 0 ? ` (${richItems.length})` : ''}
+              </p>
+              {richItems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center rounded-lg border border-dashed" style={{ borderColor: 'hsl(var(--border))' }}>
+                  <ShoppingCart className="h-8 w-8 mb-2" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  <p className="text-sm font-semibold">No items yet</p>
+                  <Button size="sm" variant="outline" className="mt-3" onClick={() => onEdit(order)}>
+                    <Pencil className="h-3.5 w-3.5" /> Edit Order
+                  </Button>
+                </div>
+              ) : (
+                <ItemsAccordion items={richItems} />
+              )}
+            </div>
+
+            {/* Totals card */}
+            <div className="rounded-xl border p-4 space-y-2 text-sm" style={{ borderColor: 'hsl(var(--border))' }}>
+              <p className="text-xs font-bold uppercase tracking-wider mb-3" style={{ color: 'hsl(var(--muted-foreground))' }}>Summary</p>
+              <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                <span>Subtotal</span>
+                <span className="font-medium" style={{ color: 'hsl(var(--foreground))' }}>{formatCurrency(sub)}</span>
+              </div>
+              {disc > 0 && (
+                <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  <span>Discount ({order.discount_type === 'percent' ? `${order.discount_value}%` : 'flat'})</span>
+                  <span className="font-medium text-red-500">-{formatCurrency(disc)}</span>
+                </div>
+              )}
+              {order.tax_rate > 0 && (
+                <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  <span>Tax ({order.tax_rate}%)</span>
+                  <span className="font-medium" style={{ color: 'hsl(var(--foreground))' }}>{formatCurrency(tax)}</span>
+                </div>
+              )}
+              {order.deposit_amount > 0 && (
+                <div className="flex justify-between" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                  <span>Deposit</span>
+                  <span className="font-medium text-green-600">-{formatCurrency(order.deposit_amount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center pt-3 mt-1 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+                <span className="font-bold text-base">Total</span>
+                <span className="font-bold text-xl" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(total)}</span>
+              </div>
+              {order.deposit_amount > 0 && (
+                <div className="flex justify-between text-sm font-semibold" style={{ color: 'hsl(218 91% 57%)' }}>
+                  <span>Balance Due</span>
+                  <span>{formatCurrency(Math.max(0, total - order.deposit_amount))}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Tracking (collapsible) */}
+            <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
+              <button
+                type="button"
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-accent transition-colors"
+                onClick={() => setTrackingOpen((v) => !v)}
+              >
+                <div className="flex items-center gap-2">
+                  <Truck className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  <span className="text-sm font-semibold">Tracking</span>
+                  {(order.tracking_number) && (
+                    <span className="text-xs font-mono ml-1" style={{ color: 'hsl(var(--muted-foreground))' }}>{order.tracking_number}</span>
+                  )}
+                </div>
+                {trackingOpen
+                  ? <ChevronUp className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  : <ChevronDown className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                }
+              </button>
+              {trackingOpen && (
+                <div className="border-t px-4 py-3 space-y-3" style={{ borderColor: 'hsl(var(--border))' }}>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Carrier</Label>
+                    <Select value={carrier || '__none__'} onValueChange={(v) => setCarrier(v === '__none__' ? '' : v)}>
+                      <SelectTrigger className="h-8 text-sm">
+                        <SelectValue placeholder="Select carrier…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">— Select carrier —</SelectItem>
+                        {CARRIERS.map((c) => (
+                          <SelectItem key={c} value={c}>{c}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Tracking Number</Label>
+                    <Input
+                      className="h-8 text-sm font-mono"
+                      placeholder="1Z999AA10123456784"
+                      value={trackingNumber}
+                      onChange={(e) => setTrackingNumber(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    className="w-full"
+                    size="sm"
+                    onClick={saveTracking}
+                    disabled={savingTracking}
+                    style={{ backgroundColor: 'hsl(218 91% 57%)' }}
+                  >
+                    {savingTracking ? 'Saving…' : 'Save Tracking'}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+          {/* ── Bottom action bar ── */}
+          <div className="shrink-0 px-6 py-3 border-t flex items-center gap-2" style={{ borderColor: 'hsl(var(--border))' }}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateInvoice}
+              style={{ backgroundColor: 'hsl(218 91% 57%)' }}
             >
-              Cancelled
-            </button>
+              <FileText className="h-4 w-4" /> Create Invoice
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => onEdit(order)}
+            >
+              <Pencil className="h-3.5 w-3.5" /> Edit Order
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => { setEmailStatus(order.status); setEmailOpen(true); }}
+            >
+              <Mail className="h-3.5 w-3.5" />
+            </Button>
           </div>
-        </div>
-
-        {/* Details */}
-        <div className="px-6 py-4 space-y-4 flex-1">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Customer</p>
-              <p className="font-medium">{order.customer_name ?? '—'}</p>
-              {order.customer_email && <p style={{ color: 'hsl(var(--muted-foreground))' }}>{order.customer_email}</p>}
-              {order.customer_phone && <p style={{ color: 'hsl(var(--muted-foreground))' }}>{order.customer_phone}</p>}
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Due Date</p>
-              <p className="font-medium">{order.due_date ? formatDate(order.due_date) : '—'}</p>
-              <p className="text-xs mt-1" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                Created {formatDate(order.created_at)}
-              </p>
-            </div>
-          </div>
-
-          {order.notes && (
-            <div className="rounded-lg p-3 text-sm" style={{ backgroundColor: 'hsl(var(--muted))' }}>
-              <p className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Notes</p>
-              <p>{order.notes}</p>
-            </div>
-          )}
-
-          {/* Line items */}
-          {order.order_items && order.order_items.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                Line Items ({order.order_items.length})
-              </p>
-              <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
-                <table className="w-full text-sm">
-                  <thead style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Description</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Qty</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Unit Price</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
-                    {order.order_items.map((item) => (
-                      <tr key={item.id}>
-                        <td className="px-3 py-2">
-                          <div className="font-medium">{item.description}</div>
-                          <div className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                            {[item.decoration_type, item.decoration_location, item.color, item.size].filter(Boolean).join(' · ')}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-right">{item.qty}</td>
-                        <td className="px-3 py-2 text-right">{formatCurrency(item.unit_price)}</td>
-                        <td className="px-3 py-2 text-right font-medium">{formatCurrency(item.qty * item.unit_price)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Totals */}
-          <div className="rounded-lg border p-4 space-y-2 text-sm" style={{ borderColor: 'hsl(var(--border))' }}>
-            <div className="flex justify-between">
-              <span style={{ color: 'hsl(var(--muted-foreground))' }}>Subtotal</span>
-              <span>{formatCurrency(sub)}</span>
-            </div>
-            {disc > 0 && (
-              <div className="flex justify-between">
-                <span style={{ color: 'hsl(var(--muted-foreground))' }}>
-                  Discount ({order.discount_type === 'percent' ? `${order.discount_value}%` : 'flat'})
-                </span>
-                <span className="text-red-600">-{formatCurrency(disc)}</span>
-              </div>
-            )}
-            {order.tax_rate > 0 && (
-              <div className="flex justify-between">
-                <span style={{ color: 'hsl(var(--muted-foreground))' }}>Tax ({order.tax_rate}%)</span>
-                <span>{formatCurrency(tax)}</span>
-              </div>
-            )}
-            {order.deposit_amount > 0 && (
-              <div className="flex justify-between">
-                <span style={{ color: 'hsl(var(--muted-foreground))' }}>Deposit</span>
-                <span className="text-green-700">-{formatCurrency(order.deposit_amount)}</span>
-              </div>
-            )}
-            <div className="flex justify-between font-bold text-base pt-2 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
-              <span>Total</span>
-              <span>{formatCurrency(total)}</span>
-            </div>
-            {order.deposit_amount > 0 && (
-              <div className="flex justify-between font-semibold" style={{ color: 'hsl(218, 91%, 57%)' }}>
-                <span>Balance Due</span>
-                <span>{formatCurrency(Math.max(0, total - order.deposit_amount))}</span>
-              </div>
-            )}
-          </div>
-        </div>
+        </div>{/* end panel */}
       </div>
-    </div>
+
+      <EmailComposeModal
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        order={order}
+        triggerStatus={emailStatus}
+      />
+    </>
   );
 }
 
@@ -488,16 +877,13 @@ function OrderModal({
     if (!custName && customerMode === 'inline' && !selectedCustomerId) {
       toast.error('Customer name is required'); return;
     }
-    if (!lines.some((l) => l.description.trim())) {
-      toast.error('Add at least one line item'); return;
-    }
     setSaving(true);
     try {
       const cust = resolveCustomer();
       const orderData = {
         ...cust,
         order_number: editOrder?.order_number ?? generateOrderNumber(),
-        status: editOrder?.status ?? 'new' as const,
+        status: editOrder?.status ?? 'inquiry' as const,
         due_date: dueDate || null,
         notes: notes || null,
         image_url: imageUrl || null,
@@ -1006,9 +1392,9 @@ function OrdersPageInner() {
         <Card>
           <div className="overflow-x-auto">
             {isLoading ? (
-              <div className="divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
+              <div>
                 {[...Array(6)].map((_, i) => (
-                  <div key={i} className="flex items-center gap-4 px-6 py-4">
+                  <div key={i} className="flex items-center gap-4 px-6 py-4 border-b last:border-b-0" style={{ borderColor: 'hsl(var(--border))' }}>
                     <div className="skeleton-shimmer h-4 w-28" />
                     <div className="skeleton-shimmer h-4 w-36 flex-1" />
                     <div className="skeleton-shimmer h-5 w-20 rounded-full" />

@@ -793,25 +793,33 @@ function ItemModal({ open, onClose, groups, defaultGroupId, editItem }: ItemModa
 function TierTable({ tiers }: { tiers: ServiceItemTier[] }) {
   const sorted = [...tiers].sort((a, b) => a.min_qty - b.min_qty);
   return (
-    <div className="mt-2 rounded-md overflow-hidden border" style={{ borderColor: 'hsl(var(--border))' }}>
-      <table className="w-full text-xs">
-        <thead style={{ backgroundColor: 'hsl(var(--muted))' }}>
-          <tr>
-            <th className="px-3 py-1.5 text-left font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Min Qty</th>
-            <th className="px-3 py-1.5 text-left font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>Max Qty</th>
-            <th className="px-3 py-1.5 text-right font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>$/Unit</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
-          {sorted.map((t) => (
-            <tr key={t.id}>
-              <td className="px-3 py-1.5">{t.min_qty.toLocaleString()}</td>
-              <td className="px-3 py-1.5">{t.max_qty != null ? t.max_qty.toLocaleString() : '∞'}</td>
-              <td className="px-3 py-1.5 text-right font-medium">{formatCurrency(t.price_per_unit)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="mt-2 rounded-lg overflow-hidden" style={{ backgroundColor: 'hsl(var(--muted))' }}>
+      <div
+        className="grid px-4 py-2 text-xs font-semibold uppercase tracking-wider"
+        style={{ gridTemplateColumns: '1fr 1fr 1fr', color: 'hsl(var(--muted-foreground))' }}
+      >
+        <span>Min Qty</span>
+        <span>Max Qty</span>
+        <span className="text-right">$/Unit</span>
+      </div>
+      {sorted.map((t, i) => (
+        <div
+          key={t.id}
+          className="grid px-4 py-3 text-sm"
+          style={{
+            gridTemplateColumns: '1fr 1fr 1fr',
+            backgroundColor: i % 2 === 0 ? 'hsl(var(--background))' : 'transparent',
+          }}
+        >
+          <span className="font-medium">{t.min_qty.toLocaleString()}</span>
+          <span style={{ color: 'hsl(var(--muted-foreground))' }}>
+            {t.max_qty != null ? t.max_qty.toLocaleString() : '∞'}
+          </span>
+          <span className="text-right font-bold" style={{ color: 'hsl(218 91% 57%)' }}>
+            {formatCurrency(t.price_per_unit)}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -839,30 +847,40 @@ function ItemRow({
 
   return (
     <div className="border-b last:border-b-0" style={{ borderColor: 'hsl(var(--border))' }}>
-      <div className="flex items-center gap-3 px-4 py-3 hover:bg-[hsl(var(--accent))] transition-colors">
+      <div
+        className="grid items-center px-4 py-3 hover:bg-[hsl(var(--accent))] transition-colors"
+        style={{ gridTemplateColumns: '2rem 1fr 5rem 9rem 6rem', gap: '0.75rem' }}
+      >
+        {/* Icon */}
         <div
-          className="flex items-center justify-center h-8 w-8 rounded-md shrink-0"
+          className="flex items-center justify-center h-8 w-8 rounded-md"
           style={{ backgroundColor: `${effectiveColor}20` }}
         >
           <IconRenderer name={effectiveIcon} size={15} color={effectiveColor} />
         </div>
-        <div className="flex-1 min-w-0">
+        {/* Name */}
+        <div className="min-w-0">
           <p className="font-medium text-sm truncate">{item.name}</p>
           {item.description && (
             <p className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{item.description}</p>
           )}
         </div>
-        <span
-          className="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-          style={{
-            backgroundColor: item.pricing_type === 'moq' ? 'hsl(218 91% 57% / 0.12)' : 'hsl(152 74% 42% / 0.12)',
-            color: item.pricing_type === 'moq' ? 'hsl(218 91% 57%)' : 'hsl(152 74% 28%)',
-          }}
-        >
-          {item.pricing_type === 'moq' ? 'MOQ' : 'Flat'}
-        </span>
-        <span className="shrink-0 text-sm font-semibold w-36 text-right">{pricePreview}</span>
-        <div className="shrink-0 flex items-center gap-1">
+        {/* Type */}
+        <div>
+          <span
+            className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+            style={{
+              backgroundColor: item.pricing_type === 'moq' ? 'hsl(218 91% 57% / 0.12)' : 'hsl(152 74% 42% / 0.12)',
+              color: item.pricing_type === 'moq' ? 'hsl(218 91% 57%)' : 'hsl(152 74% 28%)',
+            }}
+          >
+            {item.pricing_type === 'moq' ? 'MOQ' : 'Flat'}
+          </span>
+        </div>
+        {/* Price */}
+        <div className="text-sm font-semibold text-right">{pricePreview}</div>
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-1">
           {item.pricing_type === 'moq' && item.tiers.length > 0 && (
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setExpanded(!expanded)} type="button">
               {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -933,7 +951,7 @@ export default function ServicesPage() {
       <div className="flex gap-0 border rounded-xl overflow-hidden" style={{ borderColor: 'hsl(var(--border))', minHeight: 540 }}>
         {/* Left Panel — Group List */}
         <div className="flex flex-col shrink-0 border-r" style={{ width: 240, borderColor: 'hsl(var(--border))' }}>
-          <div className="p-3 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+          <div className="flex items-center px-3 border-b shrink-0" style={{ height: 64, borderColor: 'hsl(var(--border))' }}>
             <Button
               size="sm" className="w-full"
               onClick={() => { setEditGroup(null); setGroupModalOpen(true); }}

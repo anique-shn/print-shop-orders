@@ -30,11 +30,35 @@ export interface InvoicePreviewProps {
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 function calcTotals(items: InvoicePreviewProps['items'], invoice: InvoicePreviewProps['invoice']) {
-  const sub = calcSubtotal(items.map((i) => ({ qty: i.qty, unit_price: i.rate })));
+  // Exclude $0-rate items (section headers) from totals
+  const billable = items.filter((i) => i.rate > 0);
+  const sub = calcSubtotal(billable.map((i) => ({ qty: i.qty, unit_price: i.rate })));
   const disc = calcDiscount(sub, invoice.discount_type, invoice.discount_value);
   const tax = calcTax(sub - disc, invoice.tax_rate);
   const total = sub - disc + tax;
   return { sub, disc, tax, total };
+}
+
+/** Renders a single invoice item — either a section header (rate===0) or a normal line row.
+ *  Each layout passes its own style for the row container. */
+function renderInvoiceItemClassic(item: InvoicePreviewProps['items'][number], i: number, accentColor: string) {
+  if (item.rate === 0) {
+    return (
+      <tr key={i} style={{ backgroundColor: '#F1F5F9', borderBottom: '1px solid #E2E8F0' }}>
+        <td colSpan={4} style={{ padding: '8px 14px', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: `3px solid ${accentColor}` }}>
+          {item.description}
+        </td>
+      </tr>
+    );
+  }
+  return (
+    <tr key={i} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+      <td style={{ padding: '10px 14px', fontWeight: 500 }}>{item.description}</td>
+      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{item.qty}</td>
+      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{formatCurrency(item.rate)}</td>
+      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</td>
+    </tr>
+  );
 }
 
 function payTermLabel(value: string) {
@@ -170,14 +194,7 @@ function ClassicLayout({ company, invoice, items }: InvoicePreviewProps) {
             </tr>
           </thead>
           <tbody>
-            {items.map((item, i) => (
-              <tr key={i} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                <td style={{ padding: '10px 14px', fontWeight: 500 }}>{item.description}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{item.qty}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{formatCurrency(item.rate)}</td>
-                <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</td>
-              </tr>
-            ))}
+            {items.map((item, i) => renderInvoiceItemClassic(item, i, accentColor))}
           </tbody>
         </table>
       </div>
@@ -302,7 +319,11 @@ function ModernLayout({ company, invoice, items }: InvoicePreviewProps) {
 
         {/* Item rows */}
         <div style={{ marginBottom: 24 }}>
-          {items.map((item, i) => (
+          {items.map((item, i) => item.rate === 0 ? (
+            <div key={i} style={{ padding: '8px 14px', marginBottom: 6, borderRadius: 6, backgroundColor: '#F1F5F9', borderLeft: `3px solid ${accentColor}`, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569' }}>
+              {item.description}
+            </div>
+          ) : (
             <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 3rem 6rem 6rem', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 8, border: '1px solid #E2E8F0', marginBottom: 6, fontSize: 13 }}>
               <span style={{ fontWeight: 500 }}>{item.description}</span>
               <span style={{ textAlign: 'center', color: '#64748B' }}>{item.qty}</span>
@@ -436,7 +457,13 @@ function MinimalLayout({ company, invoice, items }: InvoicePreviewProps) {
           </tr>
         </thead>
         <tbody>
-          {items.map((item, i) => (
+          {items.map((item, i) => item.rate === 0 ? (
+            <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
+              <td colSpan={4} style={{ padding: '8px 0', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: '3px solid #0F172A', paddingLeft: 8 }}>
+                {item.description}
+              </td>
+            </tr>
+          ) : (
             <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
               <td style={{ padding: '10px 0', fontWeight: 500 }}>{item.description}</td>
               <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B' }}>{item.qty}</td>
@@ -546,7 +573,13 @@ function CompactLayout({ company, invoice, items }: InvoicePreviewProps) {
           </tr>
         </thead>
         <tbody>
-          {items.map((item, i) => (
+          {items.map((item, i) => item.rate === 0 ? (
+            <tr key={i} style={{ borderBottom: '1px solid #F1F5F9', backgroundColor: '#F8FAFC' }}>
+              <td colSpan={4} style={{ padding: '5px 8px', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#475569', borderLeft: `2px solid ${primaryColor}` }}>
+                {item.description}
+              </td>
+            </tr>
+          ) : (
             <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
               <td style={{ padding: '4px 8px' }}>{item.description}</td>
               <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748B' }}>{item.qty}</td>

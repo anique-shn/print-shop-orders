@@ -39,14 +39,84 @@ export function calcTax(amount: number, rate: number): number {
 }
 
 export const ORDER_STATUSES = [
-  { value: 'new',        label: 'New Order',        color: 'status-new' },
-  { value: 'production', label: 'In Production',     color: 'status-production' },
-  { value: 'quality',    label: 'Quality Check',     color: 'status-quality' },
-  { value: 'ready',      label: 'Ready',             color: 'status-ready' },
-  { value: 'shipped',    label: 'Shipped',           color: 'status-shipped' },
-  { value: 'delivered',  label: 'Delivered',         color: 'status-delivered' },
-  { value: 'cancelled',  label: 'Cancelled',         color: 'status-cancelled' },
+  { value: 'inquiry',    label: 'Inquiry',           color: 'status-inquiry',    dot: '#6366f1' },
+  { value: 'new',        label: 'Confirmed',         color: 'status-new',        dot: '#2E7CF6' },
+  { value: 'production', label: 'In Production',     color: 'status-production', dot: '#f59e0b' },
+  { value: 'quality',    label: 'Quality Check',     color: 'status-quality',    dot: '#8b5cf6' },
+  { value: 'ready',      label: 'Ready',             color: 'status-ready',      dot: '#10b981' },
+  { value: 'shipped',    label: 'Shipped',           color: 'status-shipped',    dot: '#06b6d4' },
+  { value: 'delivered',  label: 'Delivered',         color: 'status-delivered',  dot: '#22c55e' },
+  { value: 'cancelled',  label: 'Cancelled',         color: 'status-cancelled',  dot: '#ef4444' },
 ] as const;
+
+export const ORDER_EMAIL_TEMPLATES: Record<string, { subject: string; body: string }> = {
+  inquiry: {
+    subject: 'We received your inquiry — {order_number}',
+    body: `Hi {customer_name},
+
+Thank you for reaching out! We've received your inquiry ({order_number}) and our team will review the details shortly.
+
+We'll be in touch with a quote soon.
+
+Best regards`,
+  },
+  new: {
+    subject: 'Your order is confirmed — {order_number}',
+    body: `Hi {customer_name},
+
+Great news! Your order {order_number} has been confirmed and we're getting ready to begin production.
+
+If you have any questions, don't hesitate to reach out.
+
+Best regards`,
+  },
+  production: {
+    subject: 'Your order is in production — {order_number}',
+    body: `Hi {customer_name},
+
+Your order {order_number} has entered production. Our team is actively working on it.
+
+We'll update you as soon as it moves to the next stage.
+
+Best regards`,
+  },
+  quality: {
+    subject: 'Quality check underway — {order_number}',
+    body: `Hi {customer_name},
+
+Your order {order_number} is in our quality check phase — we're almost done!
+
+Best regards`,
+  },
+  ready: {
+    subject: 'Your order is ready — {order_number}',
+    body: `Hi {customer_name},
+
+Your order {order_number} is complete and ready! Please let us know your preferred pickup or delivery arrangement.
+
+Best regards`,
+  },
+  shipped: {
+    subject: 'Your order has shipped — {order_number}',
+    body: `Hi {customer_name},
+
+Your order {order_number} is on its way!
+
+{tracking_info}
+
+Best regards`,
+  },
+  delivered: {
+    subject: 'Your order has been delivered — {order_number}',
+    body: `Hi {customer_name},
+
+We hope you love your order {order_number}! Thank you for your business.
+
+Please don't hesitate to reach out if anything needs attention.
+
+Best regards`,
+  },
+};
 
 export const INVOICE_STATUSES = [
   { value: 'draft',     label: 'Draft',     color: 'inv-draft' },

@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import {
-  X, Plus, Trash2, Search, Download,
+  X, Plus, Trash2, Search, Download, ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
@@ -183,6 +184,88 @@ function BrowseServicesPanel({ groups, onAdd, onClose }: BrowseServicesProps) {
   );
 }
 
+// ── New Customer Mini-Modal ───────────────────────────────────────────────────
+
+function NewCustomerModal({ open, onClose, onCreated }: {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (c: Customer) => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) { setName(''); setCompany(''); setEmail(''); setPhone(''); }
+  }, [open]);
+
+  const save = async () => {
+    if (!name.trim()) { toast.error('Name is required'); return; }
+    setSaving(true);
+    try {
+      const { data, error } = await db.from('customers').insert({
+        name: name.trim(),
+        company: company.trim() || null,
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+        address: null, city: null, state: null, zip: null, notes: null,
+      }).select('*').single();
+      if (error) throw error;
+      qc.invalidateQueries({ queryKey: ['customers'] });
+      toast.success('Customer added');
+      onCreated(data as Customer);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create customer');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[300] flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.45)' }}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4" style={{ boxShadow: '0 25px 50px rgba(0,0,0,0.25)' }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+          <h2 className="font-bold text-base">New Customer</h2>
+          <button type="button" onClick={onClose} className="p-1 rounded-md hover:bg-accent transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Name <span className="text-red-500">*</span></Label>
+            <Input className="h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" autoFocus />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Company</Label>
+            <Input className="h-9" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company name" />
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <Label className="text-xs">Email</Label>
+              <Input className="h-9" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@example.com" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Phone</Label>
+              <Input className="h-9" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 000-0000" />
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 px-5 pb-5">
+          <Button variant="outline" className="flex-1" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button className="flex-1" onClick={save} disabled={saving} style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+            {saving ? 'Adding…' : 'Add Customer'}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface CreateInvoiceModalProps {
@@ -208,13 +291,10 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
   const [browseServicesOpen, setBrowseServicesOpen] = useState(false);
 
   // Customer
-  const [customerMode, setCustomerMode] = useState<'select' | 'inline'>('select');
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [custName, setCustName] = useState('');
-  const [custEmail, setCustEmail] = useState('');
-  const [custCompany, setCustCompany] = useState('');
-  const [custAddress, setCustAddress] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [custDropOpen, setCustDropOpen] = useState(false);
   const [custSearch, setCustSearch] = useState('');
+  const [newCustOpen, setNewCustOpen] = useState(false);
 
   // Invoice fields
   const [invoiceNumber] = useState(() => editInvoice?.invoice_number ?? generateInvoiceNumber());
@@ -234,12 +314,10 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
     if (!open) return;
     const today = new Date().toISOString().split('T')[0];
     if (editInvoice) {
-      setCustomerMode(editInvoice.customer_id ? 'select' : 'inline');
-      setSelectedCustomerId(editInvoice.customer_id ?? '');
-      setCustName(editInvoice.customer_name ?? '');
-      setCustEmail(editInvoice.customer_email ?? '');
-      setCustCompany(editInvoice.customer_company ?? '');
-      setCustAddress(editInvoice.customer_address ?? '');
+      const existingCust = editInvoice.customer_id
+        ? (customers.find((c) => c.id === editInvoice.customer_id) ?? null)
+        : null;
+      setSelectedCustomer(existingCust);
       setIssueDate(editInvoice.issue_date ?? today);
       setDueDate(editInvoice.due_date ?? '');
       setPaymentTerms(editInvoice.payment_terms ?? 'net30');
@@ -254,9 +332,7 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
           : [emptyLine()]
       );
     } else {
-      setCustomerMode('select');
-      setSelectedCustomerId(''); setCustName(''); setCustEmail('');
-      setCustCompany(''); setCustAddress('');
+      setSelectedCustomer(null);
       setImportOrderId('');
       setIssueDate(today); setDueDate('');
       setPaymentTerms(company?.default_payment_terms ?? 'net30');
@@ -266,20 +342,15 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
       setTerms(company?.invoice_terms ?? '');
       setLines([emptyLine()]);
     }
-  }, [open, editInvoice, company]);
+  }, [open, editInvoice, company, customers]);
 
   const handleImportOrder = (orderId: string) => {
     setImportOrderId(orderId);
     const order = orders.find((o) => o.id === orderId);
     if (!order) return;
     if (order.customer_id) {
-      setCustomerMode('select');
-      setSelectedCustomerId(order.customer_id);
-    } else {
-      setCustomerMode('inline');
-      setCustName(order.customer_name ?? '');
-      setCustEmail(order.customer_email ?? '');
-      setCustCompany(order.customer_company ?? '');
+      const c = customers.find((x) => x.id === order.customer_id) ?? null;
+      setSelectedCustomer(c);
     }
     setDiscountType(order.discount_type);
     setDiscountValue(String(order.discount_value));
@@ -304,25 +375,15 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
   const tax = calcTax(sub - disc, parseFloat(taxRate) || 0);
   const total = sub - disc + tax;
 
-  const resolveCustomer = () => {
-    if (customerMode === 'select' && selectedCustomerId) {
-      const c = customers.find((x) => x.id === selectedCustomerId);
-      return {
-        customer_id: c?.id ?? null,
-        customer_name: c?.name ?? null,
-        customer_email: c?.email ?? null,
-        customer_company: c?.company ?? null,
-        customer_address: [c?.address, c?.city, c?.state, c?.zip].filter(Boolean).join(', ') || null,
-      };
-    }
-    return {
-      customer_id: null,
-      customer_name: custName || null,
-      customer_email: custEmail || null,
-      customer_company: custCompany || null,
-      customer_address: custAddress || null,
-    };
-  };
+  const resolveCustomer = () => ({
+    customer_id: selectedCustomer?.id ?? null,
+    customer_name: selectedCustomer?.name ?? null,
+    customer_email: selectedCustomer?.email ?? null,
+    customer_company: selectedCustomer?.company ?? null,
+    customer_address: selectedCustomer
+      ? [selectedCustomer.address, selectedCustomer.city, selectedCustomer.state, selectedCustomer.zip].filter(Boolean).join(', ') || null
+      : null,
+  });
 
   const filteredCustomers = custSearch.trim()
     ? customers.filter((c) =>
@@ -403,31 +464,12 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
     due_date: dueDate || null,
     payment_terms: paymentTerms,
     status: editInvoice?.status ?? 'draft',
-    customer_name: (() => {
-      if (customerMode === 'select' && selectedCustomerId) {
-        return customers.find((c) => c.id === selectedCustomerId)?.name ?? null;
-      }
-      return custName || null;
-    })(),
-    customer_email: (() => {
-      if (customerMode === 'select' && selectedCustomerId) {
-        return customers.find((c) => c.id === selectedCustomerId)?.email ?? null;
-      }
-      return custEmail || null;
-    })(),
-    customer_company: (() => {
-      if (customerMode === 'select' && selectedCustomerId) {
-        return customers.find((c) => c.id === selectedCustomerId)?.company ?? null;
-      }
-      return custCompany || null;
-    })(),
-    customer_address: (() => {
-      if (customerMode === 'select' && selectedCustomerId) {
-        const c = customers.find((x) => x.id === selectedCustomerId);
-        return [c?.address, c?.city, c?.state, c?.zip].filter(Boolean).join(', ') || null;
-      }
-      return custAddress || null;
-    })(),
+    customer_name: selectedCustomer?.name ?? null,
+    customer_email: selectedCustomer?.email ?? null,
+    customer_company: selectedCustomer?.company ?? null,
+    customer_address: selectedCustomer
+      ? [selectedCustomer.address, selectedCustomer.city, selectedCustomer.state, selectedCustomer.zip].filter(Boolean).join(', ') || null
+      : null,
     notes: notes || null,
     terms: terms || null,
     discount_type: discountType,
@@ -515,82 +557,97 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
           style={{ width: 480, borderColor: 'hsl(var(--border))' }}
         >
           {/* Customer section */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             <h3 className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>Customer</h3>
-            <div className="flex gap-1.5">
-              {(['select', 'inline'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className="text-xs px-3 py-1.5 rounded-md border font-medium transition-colors"
-                  style={{
-                    backgroundColor: customerMode === mode ? 'hsl(218 91% 57%)' : 'white',
-                    color: customerMode === mode ? 'white' : 'hsl(var(--foreground))',
-                    borderColor: 'hsl(var(--border))',
-                  }}
-                  onClick={() => setCustomerMode(mode)}
-                >
-                  {mode === 'select' ? 'Existing Customer' : 'Enter Manually'}
-                </button>
-              ))}
-            </div>
 
-            {customerMode === 'select' ? (
-              <div className="space-y-2">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
-                  <Input className="pl-8 h-8 text-sm" placeholder="Search customers…" value={custSearch} onChange={(e) => setCustSearch(e.target.value)} />
-                </div>
-                <div className="max-h-40 overflow-y-auto rounded-md border" style={{ borderColor: 'hsl(var(--border))' }}>
-                  {filteredCustomers.length === 0 ? (
-                    <p className="text-xs text-center py-4" style={{ color: 'hsl(var(--muted-foreground))' }}>No customers found</p>
-                  ) : (
-                    filteredCustomers.map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2 border-b last:border-b-0"
-                        style={{
-                          borderColor: 'hsl(var(--border))',
-                          backgroundColor: selectedCustomerId === c.id ? 'hsl(218 91% 57% / 0.08)' : undefined,
-                        }}
-                        onClick={() => setSelectedCustomerId(c.id)}
-                      >
-                        <div
-                          className="h-6 w-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
-                          style={{ backgroundColor: 'hsl(218 91% 57%)' }}
-                        >
-                          {c.name[0]?.toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="font-medium truncate">{c.name}</p>
-                          {c.company && <p className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{c.company}</p>}
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <Label className="text-xs">Name</Label>
-                  <Input className="h-8 text-sm" value={custName} onChange={(e) => setCustName(e.target.value)} placeholder="Full name" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Company</Label>
-                  <Input className="h-8 text-sm" value={custCompany} onChange={(e) => setCustCompany(e.target.value)} placeholder="Company" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Email</Label>
-                  <Input className="h-8 text-sm" type="email" value={custEmail} onChange={(e) => setCustEmail(e.target.value)} placeholder="email@example.com" />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Address</Label>
-                  <Input className="h-8 text-sm" value={custAddress} onChange={(e) => setCustAddress(e.target.value)} placeholder="123 Main St, City, ST" />
-                </div>
-              </div>
+            {/* Click-outside backdrop */}
+            {custDropOpen && (
+              <div className="fixed inset-0 z-10" onClick={() => { setCustDropOpen(false); setCustSearch(''); }} />
             )}
+
+            <div className="relative z-20">
+              {selectedCustomer ? (
+                <div
+                  className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border text-sm"
+                  style={{ borderColor: 'hsl(var(--border))' }}
+                >
+                  <div className="h-6 w-6 rounded-full flex items-center justify-center text-white font-bold shrink-0 text-[11px]" style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+                    {selectedCustomer.name[0]?.toUpperCase()}
+                  </div>
+                  <span className="font-medium truncate flex-1">{selectedCustomer.name}</span>
+                  {selectedCustomer.company && (
+                    <span className="text-xs shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>{selectedCustomer.company}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="ml-1 p-0.5 rounded hover:bg-accent shrink-0"
+                    onClick={() => setSelectedCustomer(null)}
+                  >
+                    <X className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 h-9 px-3 rounded-lg border text-sm text-left transition-colors"
+                  style={{ borderColor: custDropOpen ? 'hsl(218 91% 57%)' : 'hsl(var(--border))' }}
+                  onClick={() => setCustDropOpen((v) => !v)}
+                >
+                  <span className="flex-1" style={{ color: 'hsl(var(--muted-foreground))' }}>Select customer…</span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                </button>
+              )}
+
+              {custDropOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg border shadow-lg z-20 overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
+                  <div className="px-2 pt-2 pb-1">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3" style={{ color: 'hsl(var(--muted-foreground))' }} />
+                      <Input
+                        className="pl-6 h-7 text-xs"
+                        placeholder="Search customers…"
+                        value={custSearch}
+                        onChange={(e) => setCustSearch(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-44 overflow-y-auto">
+                    {filteredCustomers.length === 0 ? (
+                      <p className="text-xs text-center py-3" style={{ color: 'hsl(var(--muted-foreground))' }}>No customers found</p>
+                    ) : (
+                      filteredCustomers.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors flex items-center gap-2"
+                          onClick={() => { setSelectedCustomer(c); setCustDropOpen(false); setCustSearch(''); }}
+                        >
+                          <div className="h-6 w-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ backgroundColor: 'hsl(218 91% 57%)' }}>
+                            {c.name[0]?.toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{c.name}</p>
+                            {c.company && <p className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{c.company}</p>}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <div className="border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors hover:bg-accent"
+                      style={{ color: 'hsl(218 91% 57%)' }}
+                      onClick={() => { setCustDropOpen(false); setCustSearch(''); setNewCustOpen(true); }}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      New Customer…
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Invoice details */}
@@ -841,6 +898,12 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
           </div>
         </div>
       </div>
+
+      <NewCustomerModal
+        open={newCustOpen}
+        onClose={() => setNewCustOpen(false)}
+        onCreated={(c) => { setSelectedCustomer(c); setNewCustOpen(false); }}
+      />
     </div>
   );
 }

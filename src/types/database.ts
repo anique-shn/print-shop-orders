@@ -1,4 +1,4 @@
-export type OrderStatus = 'new' | 'production' | 'quality' | 'ready' | 'shipped' | 'delivered' | 'cancelled';
+export type OrderStatus = 'inquiry' | 'new' | 'production' | 'quality' | 'ready' | 'shipped' | 'delivered' | 'cancelled';
 export type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled';
 export type DiscountType = 'percent' | 'flat';
 export type PaymentTerms = 'due_on_receipt' | 'net15' | 'net30' | 'net45' | 'net60' | 'cod';
@@ -79,6 +79,8 @@ export interface Order {
   discount_value: number;
   tax_rate: number;
   deposit_amount: number;
+  tracking_number: string | null;
+  carrier: string | null;
   created_at: string;
   updated_at: string;
 }
