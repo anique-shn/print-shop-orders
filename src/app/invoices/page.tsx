@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Suspense } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Plus, Search, Pencil, Trash2, FileText, ExternalLink } from 'lucide-react';
@@ -502,7 +502,7 @@ function InvoiceModal({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function InvoicesPage() {
+function InvoicesPageInner() {
   const qc = useQueryClient();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -707,5 +707,13 @@ export default function InvoicesPage() {
         <InvoiceModal open onClose={() => setEditInvoice(null)} editInvoice={editInvoice} />
       )}
     </div>
+  );
+}
+
+export default function InvoicesPage() {
+  return (
+    <Suspense fallback={<div className="animate-page-in p-6"><div className="skeleton-shimmer h-8 w-40 mb-4" /><div className="skeleton-shimmer h-64 w-full rounded-lg" /></div>}>
+      <InvoicesPageInner />
+    </Suspense>
   );
 }

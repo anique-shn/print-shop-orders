@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Suspense } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
@@ -899,7 +899,7 @@ function KanbanColumn({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function OrdersPage() {
+function OrdersPageInner() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const { data: orders = [], isLoading } = useOrders();
@@ -1120,5 +1120,13 @@ export default function OrdersPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="animate-page-in p-6"><div className="skeleton-shimmer h-8 w-48 mb-4" /><div className="skeleton-shimmer h-64 w-full rounded-lg" /></div>}>
+      <OrdersPageInner />
+    </Suspense>
   );
 }
