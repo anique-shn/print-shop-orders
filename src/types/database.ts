@@ -157,3 +157,48 @@ export interface CompanySettings {
   invoice_terms: string | null;
   updated_at: string;
 }
+
+// ── Service Catalog Types ──────────────────────────────────────────────────────
+
+export interface ServiceGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string;
+  color: string;
+  sort_order: number;
+  created_at: string;
+}
+export type ServiceGroupInsert = Omit<ServiceGroup, 'id' | 'created_at'>;
+
+export interface ServiceItem {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string | null;
+  pricing_type: 'moq' | 'flat';
+  flat_price: number | null;
+  icon: string | null;
+  color: string | null;
+  image_url: string | null;
+  sort_order: number;
+  created_at: string;
+}
+export type ServiceItemInsert = Omit<ServiceItem, 'id' | 'created_at'>;
+
+export interface ServiceItemTier {
+  id: string;
+  item_id: string;
+  min_qty: number;
+  max_qty: number | null;
+  price_per_unit: number;
+  created_at: string;
+}
+export type ServiceItemTierInsert = Omit<ServiceItemTier, 'id' | 'created_at'>;
+
+export interface ServiceItemWithTiers extends ServiceItem {
+  tiers: ServiceItemTier[];
+}
+export interface ServiceGroupWithItems extends ServiceGroup {
+  items: ServiceItemWithTiers[];
+}

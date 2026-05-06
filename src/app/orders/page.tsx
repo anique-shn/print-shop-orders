@@ -29,6 +29,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import type { Order, OrderItem, Customer } from '@/types/database';
+import { OrderCreateModal } from './OrderCreateModal';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1101,12 +1102,12 @@ function OrdersPageInner() {
       )}
 
       {/* Modals / panels */}
-      <OrderModal
+      <OrderCreateModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
       />
       {editOrder && (
-        <OrderModal
+        <OrderCreateModal
           open
           onClose={() => setEditOrder(null)}
           editOrder={editOrder}
