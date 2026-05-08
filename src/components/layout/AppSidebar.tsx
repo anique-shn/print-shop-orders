@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, ShoppingCart, Users, Settings,
-  Printer, ChevronLeft, ChevronRight, Receipt, Layers, Shirt,
+  Printer, ChevronLeft, ChevronRight, Receipt, BookOpen, TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -11,10 +11,10 @@ import { useState } from 'react';
 const navItems = [
   { href: '/',          label: 'Dashboard',  icon: LayoutDashboard },
   { href: '/orders',    label: 'Orders',     icon: ShoppingCart },
-  { href: '/products',  label: 'Products',   icon: Shirt },
-  { href: '/services',  label: 'Services',   icon: Layers },
+  { href: '/catalog',   label: 'Catalog',    icon: BookOpen },
   { href: '/customers', label: 'Customers',  icon: Users },
   { href: '/invoices',  label: 'Invoices',   icon: Receipt },
+  { href: '/revenue',   label: 'Revenue',    icon: TrendingUp },
   { href: '/settings',  label: 'Settings',   icon: Settings },
 ];
 

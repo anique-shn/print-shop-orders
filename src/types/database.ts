@@ -101,9 +101,23 @@ export interface OrderItem {
   taxable: boolean;
   image_url: string | null;
   notes: string | null;
+  // Production (Multi-SKU) template fields
+  line_type: 'product' | 'service' | 'fee' | 'garment' | 'setup_fee';
+  garment_id: string | null;
+  size_matrix: Record<string, number> | null;
+  blank_cost: number | null;
+  markup_pct: number | null;
+  price_overridden: boolean;
+  override_reason: string | null;
+  // Optional joins
+  parent_order_item_id?: string | null;
+  product_id?: string | null;
+  service_item_id?: string | null;
+  order_item_decorations?: OrderItemDecoration[];
+  order_item_finishing?: OrderItemFinishing[];
   created_at: string;
 }
-export type OrderItemInsert = Omit<OrderItem, 'id' | 'created_at'>;
+export type OrderItemInsert = Omit<OrderItem, 'id' | 'created_at' | 'order_item_decorations' | 'order_item_finishing'>;
 
 export interface Invoice {
   id: string;
@@ -221,5 +235,115 @@ export interface Product {
   created_at: string;
 }
 export type ProductInsert = Omit<Product, 'id' | 'created_at'>;
+
+// ── Decoration Groups (generic matrix system) ─────────────────────────────────
+
+export interface DecorationGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string;
+  color: string;
+  col_labels: string[];
+  col_count: number;
+  sort_order: number;
+  active: boolean;
+  created_at: string;
+}
+export type DecorationGroupInsert = Omit<DecorationGroup, 'id' | 'created_at'>;
+
+export interface DecorationMatrixRow {
+  id: string;
+  group_id: string;
+  qty_min: number;
+  qty_max: number | null;
+  col_1: number | null;
+  col_2: number | null;
+  col_3: number | null;
+  col_4: number | null;
+  col_5: number | null;
+  col_6: number | null;
+  created_at: string;
+}
+export type DecorationMatrixRowInsert = Omit<DecorationMatrixRow, 'id' | 'created_at'>;
+
+// ── Production (Multi-SKU) Template Types ─────────────────────────────────────
+
+export interface Garment {
+  id: string;
+  brand: string;
+  style_number: string | null;
+  name: string;
+  category: string | null;
+  color: string | null;
+  base_cost: number;
+  size_upcharges: Record<string, number>;
+  markup_value: number;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+}
+export type GarmentInsert = Omit<Garment, 'id' | 'created_at'>;
+
+export interface ScreenPrintMatrix {
+  id: string;
+  qty_min: number;
+  qty_max: number | null;
+  colors_1: number | null;
+  colors_2: number | null;
+  colors_3: number | null;
+  colors_4: number | null;
+  colors_5: number | null;
+  colors_6: number | null;
+  created_at: string;
+}
+
+export interface EmbroideryMatrix {
+  id: string;
+  qty_min: number;
+  qty_max: number | null;
+  stitches_5k: number | null;
+  stitches_10k: number | null;
+  stitches_15k: number | null;
+  stitches_20k: number | null;
+  created_at: string;
+}
+
+export interface FinishingService {
+  id: string;
+  name: string;
+  unit_price: number;
+  group_name: string | null;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface OrderItemDecoration {
+  id: string;
+  order_item_id: string;
+  decoration_type: string;           // group name, e.g. "Screen Print"
+  decoration_group_id: string | null;
+  location: string;
+  col_index: number | null;          // 0-based column index in the group's matrix
+  colors: number | null;             // legacy
+  stitch_count: number | null;       // legacy
+  unit_price: number;
+  notes: string | null;
+  sort_order: number;
+  created_at: string;
+}
+export type OrderItemDecorationInsert = Omit<OrderItemDecoration, 'id' | 'created_at'>;
+
+export interface OrderItemFinishing {
+  id: string;
+  order_item_id: string;
+  finishing_service_id: string | null;
+  service_name: string;
+  unit_price: number;
+  sort_order: number;
+  created_at: string;
+}
+export type OrderItemFinishingInsert = Omit<OrderItemFinishing, 'id' | 'created_at'>;
 
 // ── Extended CompanySettings with branding ────────────────────────────────────

@@ -4,23 +4,23 @@ import { useState, useMemo, useEffect, Suspense } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
-  Plus, Search, List, LayoutGrid, X, ChevronRight,
-  Pencil, Trash2, ShoppingCart, FileText, Check, Mail,
+  Plus, Search, List, LayoutGrid, X,
+  Pencil, Trash2, ShoppingCart, FileText, Mail,
   Bell, Truck, Copy, ExternalLink, ChevronDown, ChevronUp,
+  Shirt, Briefcase, ShoppingBag, RefreshCw, Hammer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, db } from '@/lib/supabase';
 import {
-  formatCurrency, formatDate, generateOrderNumber, generateInvoiceNumber,
-  ORDER_STATUSES, ORDER_EMAIL_TEMPLATES, DECORATION_TYPES, DECORATION_LOCATIONS,
+  formatCurrency, formatDate, generateInvoiceNumber,
+  ORDER_STATUSES, ORDER_EMAIL_TEMPLATES,
   calcSubtotal, calcDiscount, calcTax,
 } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -29,29 +29,16 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import type { Order, OrderItem, Customer } from '@/types/database';
+import type { Order, OrderItem, OrderItemDecoration, OrderItemFinishing } from '@/types/database';
 import { OrderCreateModal } from './OrderCreateModal';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type OrderWithItems = Order & { order_items?: OrderItem[] };
-
-interface LineItemRow {
-  description: string;
-  decoration_type: string;
-  decoration_location: string;
-  color: string;
-  size: string;
-  qty: number;
-  unit_price: number;
-  taxable: boolean;
-  image_url: string;
-}
-
-const emptyLine = (): LineItemRow => ({
-  description: '', decoration_type: '', decoration_location: '',
-  color: '', size: '', qty: 1, unit_price: 0, taxable: false, image_url: '',
-});
+type RichItem = OrderItem & {
+  order_item_decorations?: OrderItemDecoration[];
+  order_item_finishing?: OrderItemFinishing[];
+};
+type OrderWithItems = Order & { order_items?: RichItem[] };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -80,7 +67,7 @@ function useOrders() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('orders')
-        .select('*, order_items(*)')
+        .select('*, order_items(*, order_item_decorations(*), order_item_finishing(*))')
         .order('created_at', { ascending: false });
       if (error) throw error;
       return (data ?? []) as OrderWithItems[];
@@ -88,17 +75,11 @@ function useOrders() {
   });
 }
 
-function useCustomers() {
-  return useQuery({
-    queryKey: ['customers'],
-    queryFn: async () => {
-      const { data } = await supabase.from('customers').select('*').order('name');
-      return (data ?? []) as Customer[];
-    },
-  });
-}
-
 // ── Create Invoice from Order ─────────────────────────────────────────────────
+
+function buildGarmentInvoiceDescription(item: RichItem): string {
+  return item.description || 'Garment';
+}
 
 async function createInvoiceFromOrder(order: OrderWithItems, qc: ReturnType<typeof useQueryClient>) {
   try {
@@ -131,13 +112,19 @@ async function createInvoiceFromOrder(order: OrderWithItems, qc: ReturnType<type
     if (invErr) throw invErr;
 
     if (order.order_items?.length) {
-      const invItems = order.order_items.map((oi) => ({
-        invoice_id: inv.id,
-        description: oi.description,
-        qty: oi.qty,
-        rate: oi.unit_price,
-        taxable: oi.taxable,
-      }));
+      // For garment lines: create one rolled-up invoice item
+      // For setup fees and others: create as-is
+      const invItems = order.order_items
+        .filter((oi) => oi.unit_price > 0 || oi.line_type === 'garment')
+        .map((oi) => ({
+          invoice_id: inv.id,
+          description: oi.line_type === 'garment'
+            ? buildGarmentInvoiceDescription(oi)
+            : oi.description,
+          qty: oi.qty,
+          rate: oi.unit_price,
+          taxable: oi.taxable,
+        }));
       const { error: iiErr } = await db.from('invoice_items').insert(invItems);
       if (iiErr) throw iiErr;
     }
@@ -247,12 +234,150 @@ function EmailComposeModal({
 
 // ── Order Detail Panel ────────────────────────────────────────────────────────
 
-type RichOrderItem = OrderItem & {
-  line_type?: 'product' | 'service' | 'fee';
+type RichOrderItem = RichItem & {
   product_id?: string | null;
   service_item_id?: string | null;
   parent_order_item_id?: string | null;
 };
+
+// ── Garment Detail Card (internal view) ───────────────────────────────────────
+
+function GarmentDetailCard({ item }: { item: RichOrderItem }) {
+  const [expanded, setExpanded] = useState(true);
+  const sizeMatrix = (item.size_matrix ?? {}) as Record<string, number>;
+  const decos = item.order_item_decorations ?? [];
+  const finishing = item.order_item_finishing ?? [];
+  const decoTotal = decos.reduce((s, d) => s + d.unit_price, 0);
+  const finishTotal = finishing.reduce((s, f) => s + f.unit_price, 0);
+  const blankPrice = item.blank_cost != null && item.markup_pct != null
+    ? item.blank_cost * (1 + item.markup_pct)
+    : null;
+  const sizeEntries = Object.entries(sizeMatrix).filter(([, qty]) => qty > 0);
+
+  return (
+    <div
+      className="rounded-lg border overflow-hidden"
+      style={{ borderLeft: '3px solid hsl(218 91% 57%)', borderColor: 'hsl(var(--border))', borderLeftColor: 'hsl(218 91% 57%)' }}
+    >
+      <button
+        type="button"
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-accent/50 transition-colors"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate">{item.description}</p>
+          <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+            {item.qty} pcs
+            {sizeEntries.length > 0 && ' · ' + sizeEntries.map(([s, q]) => `${s}(${q})`).join(' ')}
+          </p>
+        </div>
+        <div className="text-right shrink-0 mr-2">
+          <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+            {item.qty} × {formatCurrency(item.unit_price)}
+          </p>
+          <p className="text-sm font-bold">{formatCurrency(item.qty * item.unit_price)}</p>
+          {item.price_overridden && (
+            <p className="text-xs text-amber-600 font-medium">Override</p>
+          )}
+        </div>
+        {expanded
+          ? <ChevronUp className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />
+          : <ChevronDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }} />}
+      </button>
+
+      {expanded && (
+        <div className="border-t px-4 py-3 space-y-3" style={{ borderColor: 'hsl(var(--border))' }}>
+          {/* Size breakdown */}
+          {sizeEntries.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                Size Breakdown
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                {sizeEntries.map(([size, qty]) => (
+                  <div
+                    key={size}
+                    className="flex flex-col items-center px-2.5 py-1 rounded-md text-xs"
+                    style={{ backgroundColor: 'hsl(218 91% 57% / 0.08)', color: 'hsl(218 91% 57%)' }}
+                  >
+                    <span className="font-bold">{qty}</span>
+                    <span>{size}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Decorations */}
+          {decos.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                Decorations
+              </p>
+              <div className="space-y-1">
+                {decos.map((d) => (
+                  <div key={d.id} className="flex items-center justify-between text-xs">
+                    <span className="font-medium">
+                      {d.location} · {d.decoration_type === 'screen_print'
+                        ? `${d.colors}-color screen print`
+                        : `Embroidery (${(d.stitch_count ?? 0).toLocaleString()} sts)`}
+                    </span>
+                    <span style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(d.unit_price)}/pc</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Finishing */}
+          {finishing.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                Finishing
+              </p>
+              <div className="space-y-1">
+                {finishing.map((f) => (
+                  <div key={f.id} className="flex items-center justify-between text-xs">
+                    <span className="font-medium">{f.service_name}</span>
+                    <span style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(f.unit_price)}/pc</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Internal price breakdown */}
+          {(blankPrice != null || decoTotal > 0 || finishTotal > 0) && (
+            <div className="rounded-md p-2 text-xs space-y-0.5" style={{ backgroundColor: 'hsl(var(--muted))', color: 'hsl(var(--muted-foreground))' }}>
+              <p className="font-semibold uppercase tracking-wider mb-1">Price Breakdown</p>
+              {blankPrice != null && (
+                <div className="flex justify-between">
+                  <span>Blank ({Math.round((item.markup_pct ?? 0) * 100)}% markup)</span>
+                  <span>{formatCurrency(blankPrice)}/pc</span>
+                </div>
+              )}
+              {decoTotal > 0 && (
+                <div className="flex justify-between">
+                  <span>Decoration</span>
+                  <span>{formatCurrency(decoTotal)}/pc</span>
+                </div>
+              )}
+              {finishTotal > 0 && (
+                <div className="flex justify-between">
+                  <span>Finishing</span>
+                  <span>{formatCurrency(finishTotal)}/pc</span>
+                </div>
+              )}
+              {item.price_overridden && item.override_reason && (
+                <p className="text-amber-600 pt-1">Override: {item.override_reason}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ItemsAccordion({ items }: { items: RichOrderItem[] }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
@@ -268,13 +393,46 @@ function ItemsAccordion({ items }: { items: RichOrderItem[] }) {
       return n;
     });
 
-  const productItems = items.filter(
-    (i) => i.line_type === 'product'
-  );
+  // New production template line types
+  const garmentItems = items.filter((i) => i.line_type === 'garment');
+  const setupFeeItems = items.filter((i) => i.line_type === 'setup_fee');
+
+  // Legacy line types (backward compat)
+  const productItems = items.filter((i) => i.line_type === 'product');
   const standaloneServices = items.filter(
     (i) => (i.line_type === 'service' || !i.line_type) && !i.parent_order_item_id
   );
   const feeItems = items.filter((i) => i.line_type === 'fee');
+
+  // If order has new garment lines, use new rendering
+  if (garmentItems.length > 0 || setupFeeItems.length > 0) {
+    return (
+      <div className="space-y-2">
+        {garmentItems.map((item) => (
+          <GarmentDetailCard key={item.id} item={item} />
+        ))}
+        {setupFeeItems.length > 0 && (
+          <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'hsl(38 92% 50% / 0.3)', backgroundColor: 'hsl(38 92% 50% / 0.03)' }}>
+            {setupFeeItems.map((item, idx) => (
+              <div
+                key={item.id}
+                className={`flex items-center justify-between px-4 py-2.5 text-sm ${idx < setupFeeItems.length - 1 ? 'border-b' : ''}`}
+                style={{ borderColor: 'hsl(38 92% 50% / 0.3)' }}
+              >
+                <span className="font-medium">{item.description}</span>
+                <div className="text-right">
+                  <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                    {item.qty} × {formatCurrency(item.unit_price)}
+                  </p>
+                  <p className="font-semibold">{formatCurrency(item.qty * item.unit_price)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const renderServiceRow = (item: RichOrderItem, indent = false) => {
     const isFee = item.line_type === 'fee';
@@ -762,466 +920,6 @@ function OrderDetailPanel({
   );
 }
 
-// ── Create/Edit Order Modal ───────────────────────────────────────────────────
-
-function OrderModal({
-  open,
-  onClose,
-  editOrder,
-}: {
-  open: boolean;
-  onClose: () => void;
-  editOrder?: OrderWithItems | null;
-}) {
-  const qc = useQueryClient();
-  const { data: customers = [] } = useCustomers();
-
-  const [step, setStep] = useState(1);
-  const [saving, setSaving] = useState(false);
-
-  // Step 1 — customer
-  const [customerMode, setCustomerMode] = useState<'select' | 'inline'>('select');
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [custName, setCustName] = useState('');
-  const [custEmail, setCustEmail] = useState('');
-  const [custPhone, setCustPhone] = useState('');
-  const [custCompany, setCustCompany] = useState('');
-
-  // Step 2 — order details
-  const [dueDate, setDueDate] = useState('');
-  const [notes, setNotes] = useState('');
-  const [imageUrl, setImageUrl] = useState('');
-  const [depositAmount, setDepositAmount] = useState('');
-  const [discountType, setDiscountType] = useState<'percent' | 'flat'>('percent');
-  const [discountValue, setDiscountValue] = useState('');
-  const [taxRate, setTaxRate] = useState('');
-
-  // Step 3 — line items
-  const [lines, setLines] = useState<LineItemRow[]>([emptyLine()]);
-
-  // Populate from edit order
-  useEffect(() => {
-    if (!open) return;
-    if (editOrder) {
-      const cId = editOrder.customer_id ?? '';
-      setCustomerMode(cId ? 'select' : 'inline');
-      setSelectedCustomerId(cId);
-      setCustName(editOrder.customer_name ?? '');
-      setCustEmail(editOrder.customer_email ?? '');
-      setCustPhone(editOrder.customer_phone ?? '');
-      setCustCompany(editOrder.customer_company ?? '');
-      setDueDate(editOrder.due_date ?? '');
-      setNotes(editOrder.notes ?? '');
-      setImageUrl(editOrder.image_url ?? '');
-      setDepositAmount(String(editOrder.deposit_amount ?? ''));
-      setDiscountType(editOrder.discount_type ?? 'percent');
-      setDiscountValue(String(editOrder.discount_value ?? ''));
-      setTaxRate(String(editOrder.tax_rate ?? ''));
-      setLines(
-        editOrder.order_items?.length
-          ? editOrder.order_items.map((oi) => ({
-              description: oi.description,
-              decoration_type: oi.decoration_type ?? '',
-              decoration_location: oi.decoration_location ?? '',
-              color: oi.color ?? '',
-              size: oi.size ?? '',
-              qty: oi.qty,
-              unit_price: oi.unit_price,
-              taxable: oi.taxable,
-              image_url: oi.image_url ?? '',
-            }))
-          : [emptyLine()]
-      );
-    } else {
-      setStep(1);
-      setCustomerMode('select');
-      setSelectedCustomerId('');
-      setCustName(''); setCustEmail(''); setCustPhone(''); setCustCompany('');
-      setDueDate(''); setNotes(''); setImageUrl(''); setDepositAmount('');
-      setDiscountType('percent'); setDiscountValue(''); setTaxRate('');
-      setLines([emptyLine()]);
-    }
-  }, [open, editOrder]);
-
-  const updateLine = (i: number, key: keyof LineItemRow, val: string | boolean | number) => {
-    setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, [key]: val } : l));
-  };
-
-  // Derived totals
-  const sub = calcSubtotal(lines.map((l) => ({ qty: l.qty, unit_price: l.unit_price })));
-  const disc = calcDiscount(sub, discountType, parseFloat(discountValue) || 0);
-  const tax = calcTax(sub - disc, parseFloat(taxRate) || 0);
-  const total = sub - disc + tax;
-
-  const resolveCustomer = () => {
-    if (customerMode === 'select' && selectedCustomerId) {
-      const c = customers.find((x) => x.id === selectedCustomerId);
-      return {
-        customer_id: c?.id ?? null,
-        customer_name: c?.name ?? null,
-        customer_email: c?.email ?? null,
-        customer_phone: c?.phone ?? null,
-        customer_company: c?.company ?? null,
-      };
-    }
-    return {
-      customer_id: null,
-      customer_name: custName || null,
-      customer_email: custEmail || null,
-      customer_phone: custPhone || null,
-      customer_company: custCompany || null,
-    };
-  };
-
-  const save = async () => {
-    if (!custName && customerMode === 'inline' && !selectedCustomerId) {
-      toast.error('Customer name is required'); return;
-    }
-    setSaving(true);
-    try {
-      const cust = resolveCustomer();
-      const orderData = {
-        ...cust,
-        order_number: editOrder?.order_number ?? generateOrderNumber(),
-        status: editOrder?.status ?? 'inquiry' as const,
-        due_date: dueDate || null,
-        notes: notes || null,
-        image_url: imageUrl || null,
-        deposit_amount: parseFloat(depositAmount) || 0,
-        discount_type: discountType,
-        discount_value: parseFloat(discountValue) || 0,
-        tax_rate: parseFloat(taxRate) || 0,
-      };
-
-      let orderId = editOrder?.id;
-      if (editOrder) {
-        const { error } = await db.from('orders').update(orderData).eq('id', editOrder.id);
-        if (error) throw error;
-        await db.from('order_items').delete().eq('order_id', editOrder.id);
-      } else {
-        const { data, error } = await db.from('orders').insert(orderData).select('id').single();
-        if (error) throw error;
-        orderId = data.id;
-      }
-
-      const itemRows = lines.filter((l) => l.description.trim()).map((l) => ({
-        order_id: orderId!,
-        item_id: null,
-        variant_id: null,
-        description: l.description,
-        decoration_type: l.decoration_type || null,
-        decoration_location: l.decoration_location || null,
-        color: l.color || null,
-        size: l.size || null,
-        qty: l.qty,
-        unit_price: l.unit_price,
-        taxable: l.taxable,
-        image_url: l.image_url || null,
-        notes: null,
-      }));
-      if (itemRows.length) {
-        const { error } = await db.from('order_items').insert(itemRows);
-        if (error) throw error;
-      }
-
-      toast.success(editOrder ? 'Order updated' : 'Order created');
-      qc.invalidateQueries({ queryKey: ['orders'] });
-      onClose();
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to save order');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const stepLabels = ['Customer', 'Details', 'Line Items'];
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{editOrder ? `Edit ${editOrder.order_number}` : 'New Order'}</DialogTitle>
-          <DialogDescription>
-            {editOrder ? 'Update order information.' : 'Step through to create a new order.'}
-          </DialogDescription>
-        </DialogHeader>
-
-        {/* Step indicator */}
-        {!editOrder && (
-          <div className="flex items-center gap-2 px-6 pb-2">
-            {stepLabels.map((label, i) => {
-              const s = i + 1;
-              const active = step === s;
-              const done = step > s;
-              return (
-                <div key={s} className="flex items-center gap-2">
-                  <button
-                    className="flex items-center gap-2 text-sm font-medium"
-                    onClick={() => s < step && setStep(s)}
-                  >
-                    <span
-                      className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold"
-                      style={{
-                        backgroundColor: active || done ? 'hsl(218, 91%, 57%)' : 'hsl(var(--muted))',
-                        color: active || done ? 'white' : 'hsl(var(--muted-foreground))',
-                      }}
-                    >
-                      {done ? <Check className="h-3 w-3" /> : s}
-                    </span>
-                    <span style={{ color: active ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))' }}>
-                      {label}
-                    </span>
-                  </button>
-                  {i < stepLabels.length - 1 && (
-                    <ChevronRight className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="px-6 pb-2 space-y-4">
-          {/* STEP 1: Customer */}
-          {(step === 1 || editOrder) && (
-            <div className="space-y-4">
-              {!editOrder && <h3 className="font-semibold">Customer Information</h3>}
-              <div className="flex gap-2 mb-3">
-                <button
-                  className="text-sm px-3 py-1.5 rounded-md border font-medium transition-colors"
-                  style={{
-                    backgroundColor: customerMode === 'select' ? 'hsl(218, 91%, 57%)' : 'white',
-                    color: customerMode === 'select' ? 'white' : 'hsl(var(--foreground))',
-                    borderColor: 'hsl(var(--border))',
-                  }}
-                  onClick={() => setCustomerMode('select')}
-                >
-                  Existing Customer
-                </button>
-                <button
-                  className="text-sm px-3 py-1.5 rounded-md border font-medium transition-colors"
-                  style={{
-                    backgroundColor: customerMode === 'inline' ? 'hsl(218, 91%, 57%)' : 'white',
-                    color: customerMode === 'inline' ? 'white' : 'hsl(var(--foreground))',
-                    borderColor: 'hsl(var(--border))',
-                  }}
-                  onClick={() => setCustomerMode('inline')}
-                >
-                  Enter Manually
-                </button>
-              </div>
-
-              {customerMode === 'select' ? (
-                <div className="space-y-1.5">
-                  <Label>Select Customer</Label>
-                  <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Search and select customer…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {customers.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.name}{c.company ? ` — ${c.company}` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>Name <span className="text-red-500">*</span></Label>
-                    <Input value={custName} onChange={(e) => setCustName(e.target.value)} placeholder="Full name" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Company</Label>
-                    <Input value={custCompany} onChange={(e) => setCustCompany(e.target.value)} placeholder="Company" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Email</Label>
-                    <Input type="email" value={custEmail} onChange={(e) => setCustEmail(e.target.value)} placeholder="email@example.com" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Phone</Label>
-                    <Input value={custPhone} onChange={(e) => setCustPhone(e.target.value)} placeholder="(555) 000-0000" />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* STEP 2: Details */}
-          {(step === 2 || editOrder) && (
-            <div className="space-y-4">
-              {!editOrder && <h3 className="font-semibold">Order Details</h3>}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>Due Date</Label>
-                  <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Deposit Amount ($)</Label>
-                  <Input type="number" min={0} step={0.01} value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Discount Type</Label>
-                  <Select value={discountType} onValueChange={(v) => setDiscountType(v as 'percent' | 'flat')}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="percent">Percent (%)</SelectItem>
-                      <SelectItem value="flat">Flat ($)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Discount Value</Label>
-                  <Input type="number" min={0} step={0.01} value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} placeholder="0" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Tax Rate (%)</Label>
-                  <Input type="number" min={0} step={0.01} value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0.00" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Reference Image URL</Label>
-                  <Input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://…" />
-                </div>
-                <div className="col-span-2 space-y-1.5">
-                  <Label>Notes</Label>
-                  <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes…" rows={2} />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: Line items */}
-          {(step === 3 || editOrder) && (
-            <div className="space-y-3">
-              {!editOrder && <h3 className="font-semibold">Line Items</h3>}
-              <div className="rounded-lg border overflow-x-auto" style={{ borderColor: 'hsl(var(--border))' }}>
-                <table className="w-full text-sm min-w-200">
-                  <thead style={{ backgroundColor: 'hsl(var(--muted))' }}>
-                    <tr>
-                      {['Description*', 'Type', 'Location', 'Color', 'Size', 'Qty', 'Unit Price', 'Tax', ''].map((h) => (
-                        <th key={h} className="px-2 py-2 text-left text-xs font-medium" style={{ color: 'hsl(var(--muted-foreground))' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
-                    {lines.map((line, i) => (
-                      <tr key={i}>
-                        <td className="px-2 py-2 min-w-40">
-                          <Input className="h-8" value={line.description} onChange={(e) => updateLine(i, 'description', e.target.value)} placeholder="Item description" />
-                        </td>
-                        <td className="px-2 py-2 min-w-32">
-                          <Select value={line.decoration_type} onValueChange={(v) => updateLine(i, 'decoration_type', v)}>
-                            <SelectTrigger className="h-8"><SelectValue placeholder="Type" /></SelectTrigger>
-                            <SelectContent>
-                              {DECORATION_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
-                        </td>
-                        <td className="px-2 py-2 min-w-30">
-                          <Select value={line.decoration_location} onValueChange={(v) => updateLine(i, 'decoration_location', v)}>
-                            <SelectTrigger className="h-8"><SelectValue placeholder="Location" /></SelectTrigger>
-                            <SelectContent>
-                              {DECORATION_LOCATIONS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
-                        </td>
-                        <td className="px-2 py-2 w-20">
-                          <Input className="h-8" value={line.color} onChange={(e) => updateLine(i, 'color', e.target.value)} placeholder="Black" />
-                        </td>
-                        <td className="px-2 py-2 w-16">
-                          <Input className="h-8" value={line.size} onChange={(e) => updateLine(i, 'size', e.target.value)} placeholder="M" />
-                        </td>
-                        <td className="px-2 py-2 w-16">
-                          <Input className="h-8" type="number" min={1} value={line.qty} onChange={(e) => updateLine(i, 'qty', parseInt(e.target.value) || 1)} />
-                        </td>
-                        <td className="px-2 py-2 w-24">
-                          <Input className="h-8" type="number" min={0} step={0.01} value={line.unit_price} onChange={(e) => updateLine(i, 'unit_price', parseFloat(e.target.value) || 0)} />
-                        </td>
-                        <td className="px-2 py-2 w-10 text-center">
-                          <input
-                            type="checkbox"
-                            checked={line.taxable}
-                            onChange={(e) => updateLine(i, 'taxable', e.target.checked)}
-                            className="rounded"
-                          />
-                        </td>
-                        <td className="px-2 py-2 w-8">
-                          <Button
-                            variant="ghost" size="icon" className="h-7 w-7 text-red-500"
-                            onClick={() => setLines(lines.filter((_, idx) => idx !== i))}
-                            disabled={lines.length === 1}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setLines([...lines, emptyLine()])}>
-                <Plus className="h-3.5 w-3.5" /> Add Row
-              </Button>
-
-              {/* Live totals */}
-              <div className="flex justify-end">
-                <div className="space-y-1.5 text-sm w-60">
-                  <div className="flex justify-between">
-                    <span style={{ color: 'hsl(var(--muted-foreground))' }}>Subtotal</span>
-                    <span>{formatCurrency(sub)}</span>
-                  </div>
-                  {disc > 0 && (
-                    <div className="flex justify-between">
-                      <span style={{ color: 'hsl(var(--muted-foreground))' }}>Discount</span>
-                      <span className="text-red-600">-{formatCurrency(disc)}</span>
-                    </div>
-                  )}
-                  {(parseFloat(taxRate) || 0) > 0 && (
-                    <div className="flex justify-between">
-                      <span style={{ color: 'hsl(var(--muted-foreground))' }}>Tax ({taxRate}%)</span>
-                      <span>{formatCurrency(tax)}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between font-bold pt-1 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
-                    <span>Total</span>
-                    <span>{formatCurrency(total)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          {editOrder ? (
-            <>
-              <Button variant="outline" onClick={onClose}>Cancel</Button>
-              <Button onClick={save} disabled={saving}>
-                {saving ? 'Saving…' : 'Save Changes'}
-              </Button>
-            </>
-          ) : (
-            <>
-              {step > 1 && <Button variant="outline" onClick={() => setStep(step - 1)}>Back</Button>}
-              <Button variant="outline" onClick={onClose}>Cancel</Button>
-              {step < 3 ? (
-                <Button onClick={() => setStep(step + 1)}>Next →</Button>
-              ) : (
-                <Button onClick={save} disabled={saving}>
-                  {saving ? 'Creating…' : 'Create Order'}
-                </Button>
-              )}
-            </>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 // ── Kanban column ─────────────────────────────────────────────────────────────
 
 function KanbanColumn({
@@ -1286,6 +984,147 @@ function KanbanColumn({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+// ── Template Selector ─────────────────────────────────────────────────────────
+
+const JOB_TEMPLATES = [
+  {
+    id: 'production_multi_sku',
+    label: 'Production Job',
+    subtitle: 'Multi-SKU',
+    description: 'Apparel, screen printing, embroidery, decorated goods. Size matrix + decoration + finishing.',
+    icon: Shirt,
+    color: 'hsl(218 91% 57%)',
+    available: true,
+  },
+  {
+    id: 'service',
+    label: 'Service Job',
+    subtitle: 'Coming Soon',
+    description: 'Consulting, design, agency services. Flat-fee or hourly line items.',
+    icon: Briefcase,
+    color: 'hsl(var(--muted-foreground))',
+    available: false,
+  },
+  {
+    id: 'retail',
+    label: 'Retail Sale',
+    subtitle: 'Coming Soon',
+    description: 'Inventory-based product sales. Pulls from stock, tracks units.',
+    icon: ShoppingBag,
+    color: 'hsl(var(--muted-foreground))',
+    available: false,
+  },
+  {
+    id: 'subscription',
+    label: 'Subscription',
+    subtitle: 'Coming Soon',
+    description: 'Recurring retainers, memberships, SaaS-style billing.',
+    icon: RefreshCw,
+    color: 'hsl(var(--muted-foreground))',
+    available: false,
+  },
+  {
+    id: 'project',
+    label: 'Project',
+    subtitle: 'Coming Soon',
+    description: 'Construction, long-cycle custom builds, milestone billing.',
+    icon: Hammer,
+    color: 'hsl(var(--muted-foreground))',
+    available: false,
+  },
+] as const;
+
+function TemplateSelectorModal({
+  open,
+  onClose,
+  onSelect,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSelect: (templateId: string) => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+      <div
+        className="rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        style={{
+          width: 'min(100vw - 2rem, 640px)',
+          backgroundColor: 'hsl(var(--background))',
+        }}
+      >
+        {/* Header */}
+        <div className="px-6 py-5 border-b flex items-center justify-between" style={{ borderColor: 'hsl(var(--border))' }}>
+          <div>
+            <h2 className="font-bold text-lg font-heading">New Order</h2>
+            <p className="text-sm mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              Select a template to define the order structure and pricing model.
+            </p>
+          </div>
+          <button type="button" className="p-1.5 rounded-lg hover:bg-accent" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Template cards */}
+        <div className="p-4 space-y-2 overflow-y-auto">
+          {JOB_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.id}
+              type="button"
+              className="w-full text-left rounded-xl border p-4 transition-all"
+              style={{
+                borderColor: tpl.available ? 'hsl(var(--border))' : 'hsl(var(--border))',
+                opacity: tpl.available ? 1 : 0.5,
+                cursor: tpl.available ? 'pointer' : 'not-allowed',
+                backgroundColor: tpl.available ? 'transparent' : 'hsl(var(--muted)/0.3)',
+              }}
+              onMouseEnter={(e) => { if (tpl.available) (e.currentTarget as HTMLButtonElement).style.borderColor = tpl.color; }}
+              onMouseLeave={(e) => { if (tpl.available) (e.currentTarget as HTMLButtonElement).style.borderColor = 'hsl(var(--border))'; }}
+              onClick={() => tpl.available && onSelect(tpl.id)}
+              disabled={!tpl.available}
+            >
+              <div className="flex items-center gap-4">
+                <div
+                  className="h-10 w-10 rounded-lg shrink-0 flex items-center justify-center"
+                  style={{ backgroundColor: tpl.available ? `${tpl.color}1A` : 'hsl(var(--muted))' }}
+                >
+                  <tpl.icon className="h-5 w-5" style={{ color: tpl.color }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-sm">{tpl.label}</p>
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full font-medium"
+                      style={{
+                        backgroundColor: tpl.available ? 'hsl(218 91% 57% / 0.1)' : 'hsl(var(--muted))',
+                        color: tpl.available ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))',
+                      }}
+                    >
+                      {tpl.available ? 'Active' : tpl.subtitle}
+                    </span>
+                  </div>
+                  <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                    {tpl.description}
+                  </p>
+                </div>
+                {tpl.available && (
+                  <div
+                    className="shrink-0 h-8 w-8 rounded-lg flex items-center justify-center"
+                    style={{ backgroundColor: 'hsl(218 91% 57%)', color: 'white' }}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </div>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OrdersPageInner() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
@@ -1294,7 +1133,8 @@ function OrdersPageInner() {
   const [view, setView] = useState<'list' | 'kanban'>('list');
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [createOpen, setCreateOpen] = useState(searchParams.get('new') === '1');
+  const [templateOpen, setTemplateOpen] = useState(searchParams.get('new') === '1');
+  const [createOpen, setCreateOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<OrderWithItems | null>(null);
   const [editOrder, setEditOrder] = useState<OrderWithItems | null>(null);
 
@@ -1327,7 +1167,7 @@ function OrdersPageInner() {
         <div>
           <h1 className="text-2xl font-bold font-heading">Orders</h1>
           <p className="mt-1 text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>
-            Track and manage all print shop orders.
+            Track and manage all production orders.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1345,7 +1185,7 @@ function OrdersPageInner() {
           >
             <LayoutGrid className="h-4 w-4" />
           </Button>
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button onClick={() => setTemplateOpen(true)}>
             <Plus className="h-4 w-4" /> New Order
           </Button>
         </div>
@@ -1413,7 +1253,7 @@ function OrdersPageInner() {
                   {search || statusFilter !== 'all' ? 'Try adjusting the search or status filter.' : 'Create your first order to start tracking production.'}
                 </p>
                 {!search && statusFilter === 'all' && (
-                  <Button className="mt-4" size="sm" onClick={() => setCreateOpen(true)}>
+                  <Button className="mt-4" size="sm" onClick={() => setTemplateOpen(true)}>
                     <Plus className="h-4 w-4" /> New Order
                   </Button>
                 )}
@@ -1487,7 +1327,12 @@ function OrdersPageInner() {
         </Card>
       )}
 
-      {/* Modals / panels */}
+      {/* Template selector → then create modal */}
+      <TemplateSelectorModal
+        open={templateOpen}
+        onClose={() => setTemplateOpen(false)}
+        onSelect={() => { setTemplateOpen(false); setCreateOpen(true); }}
+      />
       <OrderCreateModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
