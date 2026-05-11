@@ -24,10 +24,26 @@ export interface InvoicePreviewProps {
     discount_value: number;
     tax_rate: number;
   };
-  items: { description: string; qty: number; rate: number; taxable: boolean }[];
+  items: { description: string; qty: number; rate: number; taxable: boolean; size_label?: string }[];
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+function SizeTag({ label }: { label: string }) {
+  return (
+    <span style={{
+      display: 'inline-block',
+      fontSize: 9,
+      fontWeight: 600,
+      letterSpacing: '0.04em',
+      color: '#2E7CF6',
+      background: '#EFF6FF',
+      borderRadius: 4,
+      padding: '1px 5px',
+      marginTop: 2,
+    }}>{label}</span>
+  );
+}
 
 function calcTotals(items: InvoicePreviewProps['items'], invoice: InvoicePreviewProps['invoice']) {
   // Exclude $0-rate items (section headers) from totals
@@ -45,7 +61,7 @@ function renderInvoiceItemClassic(item: InvoicePreviewProps['items'][number], i:
   if (item.rate === 0) {
     return (
       <tr key={i} style={{ backgroundColor: '#F1F5F9', borderBottom: '1px solid #E2E8F0' }}>
-        <td colSpan={4} style={{ padding: '8px 14px', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: `3px solid ${accentColor}` }}>
+        <td colSpan={5} style={{ padding: '8px 14px', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: `3px solid ${accentColor}` }}>
           {item.description}
         </td>
       </tr>
@@ -54,6 +70,9 @@ function renderInvoiceItemClassic(item: InvoicePreviewProps['items'][number], i:
   return (
     <tr key={i} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
       <td style={{ padding: '10px 14px', fontWeight: 500 }}>{item.description}</td>
+      <td style={{ padding: '10px 14px', textAlign: 'center', color: '#2E7CF6', fontWeight: 600, fontSize: 11 }}>
+        {item.size_label ?? '—'}
+      </td>
       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{item.qty}</td>
       <td style={{ padding: '10px 14px', textAlign: 'right', color: '#475569' }}>{formatCurrency(item.rate)}</td>
       <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</td>
@@ -179,16 +198,16 @@ function ClassicLayout({ company, invoice, items }: InvoicePreviewProps) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ backgroundColor: primaryColor }}>
-              {['Description', 'Qty', 'Rate', 'Amount'].map((h, i) => (
+              {['Description', 'Size', 'Qty', 'Rate', 'Amount'].map((h, i) => (
                 <th key={h} style={{
                   padding: '10px 14px',
-                  textAlign: i === 0 ? 'left' : 'right',
+                  textAlign: i === 0 ? 'left' : i === 1 ? 'center' : 'right',
                   fontSize: 10,
                   fontWeight: 700,
                   textTransform: 'uppercase',
                   letterSpacing: '0.08em',
                   color: 'white',
-                  width: i === 0 ? undefined : i === 1 ? 48 : 90,
+                  width: i === 0 ? undefined : i === 1 ? 80 : i === 2 ? 48 : 90,
                 }}>{h}</th>
               ))}
             </tr>
@@ -313,8 +332,8 @@ function ModernLayout({ company, invoice, items }: InvoicePreviewProps) {
         </div>
 
         {/* Column headers */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 3rem 6rem 6rem', gap: 12, padding: '6px 14px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748B', marginBottom: 6 }}>
-          <span>Description</span><span style={{ textAlign: 'center' }}>Qty</span><span style={{ textAlign: 'right' }}>Rate</span><span style={{ textAlign: 'right' }}>Amount</span>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 5rem 3rem 6rem 6rem', gap: 12, padding: '6px 14px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748B', marginBottom: 6 }}>
+          <span>Description</span><span style={{ textAlign: 'center' }}>Size</span><span style={{ textAlign: 'center' }}>Qty</span><span style={{ textAlign: 'right' }}>Rate</span><span style={{ textAlign: 'right' }}>Amount</span>
         </div>
 
         {/* Item rows */}
@@ -324,8 +343,9 @@ function ModernLayout({ company, invoice, items }: InvoicePreviewProps) {
               {item.description}
             </div>
           ) : (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 3rem 6rem 6rem', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 8, border: '1px solid #E2E8F0', marginBottom: 6, fontSize: 13 }}>
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 5rem 3.5rem 6rem 6rem', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 8, border: '1px solid #E2E8F0', marginBottom: 6, fontSize: 13 }}>
               <span style={{ fontWeight: 500 }}>{item.description}</span>
+              <span style={{ textAlign: 'center', color: '#2E7CF6', fontWeight: 600, fontSize: 11 }}>{item.size_label ?? '—'}</span>
               <span style={{ textAlign: 'center', color: '#64748B' }}>{item.qty}</span>
               <span style={{ textAlign: 'right', color: '#64748B' }}>{formatCurrency(item.rate)}</span>
               <span style={{ textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</span>
@@ -442,16 +462,16 @@ function MinimalLayout({ company, invoice, items }: InvoicePreviewProps) {
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 32 }}>
         <thead>
           <tr style={{ borderBottom: '2px solid #0F172A' }}>
-            {['Description', 'Qty', 'Rate', 'Amount'].map((h, i) => (
+            {['Description', 'Size', 'Qty', 'Rate', 'Amount'].map((h, i) => (
               <th key={h} style={{
                 paddingBottom: 10,
-                textAlign: i === 0 ? 'left' : 'right',
+                textAlign: i === 0 ? 'left' : i === 1 ? 'center' : 'right',
                 fontSize: 10,
                 fontWeight: 700,
                 textTransform: 'uppercase',
                 letterSpacing: '0.08em',
                 color: '#475569',
-                width: i === 0 ? undefined : i === 1 ? 48 : 90,
+                width: i === 0 ? undefined : i === 1 ? 80 : i === 2 ? 48 : 90,
               }}>{h}</th>
             ))}
           </tr>
@@ -459,13 +479,14 @@ function MinimalLayout({ company, invoice, items }: InvoicePreviewProps) {
         <tbody>
           {items.map((item, i) => item.rate === 0 ? (
             <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
-              <td colSpan={4} style={{ padding: '8px 0', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: '3px solid #0F172A', paddingLeft: 8 }}>
+              <td colSpan={5} style={{ padding: '8px 0', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#475569', borderLeft: '3px solid #0F172A', paddingLeft: 8 }}>
                 {item.description}
               </td>
             </tr>
           ) : (
             <tr key={i} style={{ borderBottom: '1px solid #E2E8F0' }}>
               <td style={{ padding: '10px 0', fontWeight: 500 }}>{item.description}</td>
+              <td style={{ padding: '10px 0', textAlign: 'center', color: '#2E7CF6', fontWeight: 600, fontSize: 11 }}>{item.size_label ?? '—'}</td>
               <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B' }}>{item.qty}</td>
               <td style={{ padding: '10px 0', textAlign: 'right', color: '#64748B' }}>{formatCurrency(item.rate)}</td>
               <td style={{ padding: '10px 0', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</td>
@@ -558,16 +579,16 @@ function CompactLayout({ company, invoice, items }: InvoicePreviewProps) {
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginBottom: 16 }}>
         <thead>
           <tr style={{ backgroundColor: '#F1F5F9' }}>
-            {['Description', 'Qty', 'Rate', 'Amount'].map((h, i) => (
+            {['Description', 'Size', 'Qty', 'Rate', 'Amount'].map((h, i) => (
               <th key={h} style={{
                 padding: '5px 8px',
-                textAlign: i === 0 ? 'left' : 'right',
+                textAlign: i === 0 ? 'left' : 'center',
                 fontSize: 9,
                 fontWeight: 700,
                 textTransform: 'uppercase',
                 letterSpacing: '0.06em',
                 color: '#64748B',
-                width: i === 0 ? undefined : i === 1 ? 40 : 72,
+                width: i === 0 ? undefined : i === 1 ? 70 : i === 2 ? 40 : 72,
               }}>{h}</th>
             ))}
           </tr>
@@ -575,14 +596,15 @@ function CompactLayout({ company, invoice, items }: InvoicePreviewProps) {
         <tbody>
           {items.map((item, i) => item.rate === 0 ? (
             <tr key={i} style={{ borderBottom: '1px solid #F1F5F9', backgroundColor: '#F8FAFC' }}>
-              <td colSpan={4} style={{ padding: '5px 8px', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#475569', borderLeft: `2px solid ${primaryColor}` }}>
+              <td colSpan={5} style={{ padding: '5px 8px', fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#475569', borderLeft: `2px solid ${primaryColor}` }}>
                 {item.description}
               </td>
             </tr>
           ) : (
             <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
               <td style={{ padding: '4px 8px' }}>{item.description}</td>
-              <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748B' }}>{item.qty}</td>
+              <td style={{ padding: '4px 8px', textAlign: 'center', color: '#2E7CF6', fontWeight: 600, fontSize: 11 }}>{item.size_label ?? '—'}</td>
+              <td style={{ padding: '4px 8px', textAlign: 'center', color: '#64748B' }}>{item.qty}</td>
               <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748B' }}>{formatCurrency(item.rate)}</td>
               <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(item.qty * item.rate)}</td>
             </tr>

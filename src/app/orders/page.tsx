@@ -7,9 +7,11 @@ import {
   Plus, Search, List, LayoutGrid, X,
   Pencil, Trash2, ShoppingCart, FileText, Mail,
   Bell, Truck, Copy, ExternalLink, ChevronDown, ChevronUp,
-  Shirt, Briefcase, ShoppingBag, RefreshCw, Hammer,
+  Shirt, Briefcase, ShoppingBag, RefreshCw, Hammer, Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import { supabase, db } from '@/lib/supabase';
 import {
   formatCurrency, formatDate, generateInvoiceNumber,
@@ -29,8 +31,9 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import type { Order, OrderItem, OrderItemDecoration, OrderItemFinishing } from '@/types/database';
+import type { Order, OrderItem, OrderItemDecoration, OrderItemFinishing, CompanySettings } from '@/types/database';
 import { OrderCreateModal } from './OrderCreateModal';
+import { OrderPDFDocument } from '@/components/orders/OrderPDFDocument';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -595,7 +598,50 @@ function OrderDetailPanel({
   const [carrier, setCarrier] = useState(order.carrier ?? '');
   const [savingTracking, setSavingTracking] = useState(false);
   const [trackingOpen, setTrackingOpen] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const router = useRouter();
+
+  const { data: company } = useQuery<CompanySettings | null>({
+    queryKey: ['company-settings'],
+    queryFn: async () => {
+      const { data } = await supabase.from('company_settings').select('*').limit(1).single();
+      return (data ?? null) as CompanySettings | null;
+    },
+  });
+
+  const handleDownloadPDF = async () => {
+    setDownloading(true);
+    // Small delay to ensure PDF DOM is rendered
+    await new Promise((r) => setTimeout(r, 120));
+    const el = document.getElementById('order-pdf-document');
+    if (!el) { setDownloading(false); return; }
+    try {
+      const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pdfW = pdf.internal.pageSize.getWidth();
+      const pdfH = (canvas.height * pdfW) / canvas.width;
+      // If content is taller than one page, add extra pages
+      const pageH = pdf.internal.pageSize.getHeight();
+      if (pdfH <= pageH) {
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfW, pdfH);
+      } else {
+        let y = 0;
+        while (y < pdfH) {
+          if (y > 0) pdf.addPage();
+          pdf.addImage(imgData, 'PNG', 0, -y, pdfW, pdfH);
+          y += pageH;
+        }
+      }
+      pdf.save(`WorkOrder-${order.order_number}.pdf`);
+      toast.success('PDF downloaded');
+    } catch {
+      toast.error('Failed to generate PDF');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const moveStatus = async (newStatus: string) => {
     if (newStatus === order.status) return;
@@ -670,6 +716,14 @@ function OrderDetailPanel({
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors hover:bg-accent"
+                  style={{ borderColor: 'hsl(var(--border))' }}
+                  onClick={() => setPdfOpen((v) => !v)}
+                >
+                  <Download className="h-3.5 w-3.5" /> PDF
+                </button>
                 <button
                   type="button"
                   className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors hover:bg-accent"
@@ -916,6 +970,41 @@ function OrderDetailPanel({
         order={order}
         triggerStatus={emailStatus}
       />
+
+      {/* PDF Preview Modal */}
+      {pdfOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setPdfOpen(false)}>
+          <div
+            className="flex flex-col rounded-xl shadow-2xl overflow-hidden"
+            style={{ maxHeight: '90vh', maxWidth: '860px', width: '100%', backgroundColor: 'white' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal toolbar */}
+            <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
+              <p className="font-semibold text-sm">Work Order PDF — {order.order_number}</p>
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={handleDownloadPDF} disabled={downloading} style={{ backgroundColor: '#05253D' }}>
+                  <Download className="h-3.5 w-3.5" />
+                  {downloading ? 'Generating…' : 'Download PDF'}
+                </Button>
+                <button
+                  type="button"
+                  className="h-8 w-8 rounded-md flex items-center justify-center hover:bg-accent"
+                  onClick={() => setPdfOpen(false)}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            {/* Scrollable preview */}
+            <div className="flex-1 overflow-auto p-4" style={{ backgroundColor: '#94a3b8' }}>
+              <div className="mx-auto shadow-xl" style={{ width: 794 }}>
+                <OrderPDFDocument order={order} company={company ?? {}} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

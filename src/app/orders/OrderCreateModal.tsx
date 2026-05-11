@@ -27,7 +27,7 @@ import type {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
 
 const DECORATION_LOCATIONS = [
   'Front', 'Back', 'Left Chest', 'Right Chest', 'Left Sleeve',
@@ -80,6 +80,7 @@ interface GarmentLine {
   overriddenPrice: number;
   overrideReason: string;
   notes: string;
+  sizeUnitPrices: Record<string, number>; // per-size complete sell price overrides
 }
 
 interface SetupFeeItem {
@@ -102,8 +103,7 @@ function lookupDecorationPrice(
   const groupRows = matrix.filter((r) => r.group_id === groupId);
   const row = groupRows.find((r) => qty >= r.qty_min && (r.qty_max == null || qty <= r.qty_max));
   if (!row) return 0;
-  const colKey = `col_${colIndex + 1}` as keyof DecorationMatrixRow;
-  return (row[colKey] as number) ?? 0;
+  return (row.prices[colIndex] as number) ?? 0;
 }
 
 function totalQty(sizes: Record<string, number>): number {
@@ -134,7 +134,7 @@ function emptyGarmentLine(): GarmentLine {
     brand: '',
     styleNumber: '',
     color: '',
-    sizes: { XS: 0, S: 0, M: 0, L: 0, XL: 0, '2XL': 0, '3XL': 0 },
+    sizes: { XS: 0, S: 0, M: 0, L: 0, XL: 0, '2XL': 0, '3XL': 0, '4XL': 0, '5XL': 0 },
     blankCost: 0,
     markupPct: 0.40,
     decorations: [],
@@ -143,7 +143,91 @@ function emptyGarmentLine(): GarmentLine {
     overriddenPrice: 0,
     overrideReason: '',
     notes: '',
+    sizeUnitPrices: {},
   };
+}
+
+// Returns the effective sell price for a specific size (uses per-size override if set)
+function effectiveUnitPriceForSize(line: GarmentLine, size: string): number {
+  const override = line.sizeUnitPrices[size];
+  if (override !== undefined && override > 0) return override;
+  return effectiveUnitPrice(line);
+}
+
+// Groups active sizes by their effective price for invoice line splitting
+function groupSizesByPrice(line: GarmentLine): { price: number; sizes: string[]; qty: number; sizeMatrix: Record<string, number> }[] {
+  const allSizes = [...new Set([...STANDARD_SIZES, ...Object.keys(line.sizeUnitPrices)])];
+  const groups = new Map<number, { sizes: string[]; qty: number; sizeMatrix: Record<string, number> }>();
+  for (const size of allSizes) {
+    const qty = line.sizes[size] || 0;
+    if (!qty) continue;
+    const price = Math.round(effectiveUnitPriceForSize(line, size) * 100) / 100;
+    if (!groups.has(price)) groups.set(price, { sizes: [], qty: 0, sizeMatrix: {} });
+    const g = groups.get(price)!;
+    g.sizes.push(size);
+    g.qty += qty;
+    g.sizeMatrix[size] = qty;
+  }
+  return Array.from(groups.entries()).map(([price, data]) => ({ price, ...data }));
+}
+
+// Total revenue for a garment line, accounting for per-size pricing
+function garmentLineSubtotal(line: GarmentLine): number {
+  if (Object.keys(line.sizeUnitPrices).length === 0) {
+    return totalQty(line.sizes) * effectiveUnitPrice(line);
+  }
+  const allSizes = [...new Set([...STANDARD_SIZES, ...Object.keys(line.sizeUnitPrices)])];
+  return allSizes.reduce((sum, size) => {
+    const qty = line.sizes[size] || 0;
+    if (!qty) return sum;
+    return sum + qty * effectiveUnitPriceForSize(line, size);
+  }, 0);
+}
+
+// Per-group decoration pricing helpers
+function decoUnitPriceForQty(d: DecorationItem, decoMatrix: DecorationMatrixRow[], qty: number): number {
+  if (!d.groupId || qty <= 0) return d.unitPrice;
+  const p = lookupDecorationPrice(decoMatrix, d.groupId, qty, d.colIndex);
+  return p > 0 ? p : d.unitPrice;
+}
+
+interface GroupBreakdown {
+  price: number;
+  sizes: string[];
+  qty: number;
+  sizeMatrix: Record<string, number>;
+  decoPerPc: number;
+  finishPerPc: number;
+  totalPerPc: number;
+  groupTotal: number;
+}
+
+function computeLineBreakdown(
+  line: GarmentLine,
+  decoMatrix: DecorationMatrixRow[],
+): { groups: GroupBreakdown[]; total: number; hasSizeOverrides: boolean } {
+  const hasSizeOverrides = Object.keys(line.sizeUnitPrices).length > 0;
+  const finishPerPc = line.finishing.reduce((s, f) => s + f.unitPrice, 0);
+
+  if (hasSizeOverrides) {
+    const groups = groupSizesByPrice(line);
+    const detailed: GroupBreakdown[] = groups.map((g) => {
+      const decoPerPc = line.decorations.reduce((s, d) => s + decoUnitPriceForQty(d, decoMatrix, g.qty), 0);
+      const totalPerPc = g.price + decoPerPc + finishPerPc;
+      return { ...g, decoPerPc, finishPerPc, totalPerPc, groupTotal: g.qty * totalPerPc };
+    });
+    return { groups: detailed, total: detailed.reduce((s, g) => s + g.groupTotal, 0), hasSizeOverrides: true };
+  } else {
+    const qty = totalQty(line.sizes);
+    const unitPrice = effectiveUnitPrice(line);
+    const activeSizes = Object.entries(line.sizes).filter(([, v]) => v > 0).map(([s]) => s);
+    const group: GroupBreakdown = {
+      price: unitPrice, sizes: activeSizes, qty,
+      sizeMatrix: line.sizes, decoPerPc: 0, finishPerPc: 0,
+      totalPerPc: unitPrice, groupTotal: qty * unitPrice,
+    };
+    return { groups: qty > 0 ? [group] : [], total: qty * unitPrice, hasSizeOverrides: false };
+  }
 }
 
 // ── Data Hooks ────────────────────────────────────────────────────────────────
@@ -290,9 +374,16 @@ function GarmentCatalogPicker({
                     {[g.color, g.style_number].filter(Boolean).join(' · ')}
                   </p>
                 </div>
-                <span className="text-xs font-semibold shrink-0" style={{ color: 'hsl(218 91% 57%)' }}>
-                  ${g.base_cost.toFixed(2)} cost
-                </span>
+                {(() => {
+                  const prices = Object.values(g.size_upcharges as Record<string, number> ?? {}).filter(v => v > 0);
+                  const mn = prices.length ? Math.min(...prices) : 0;
+                  const mx = prices.length ? Math.max(...prices) : 0;
+                  return (
+                    <span className="text-xs font-semibold shrink-0" style={{ color: 'hsl(218 91% 57%)' }}>
+                      {prices.length > 0 ? `$${mn.toFixed(0)}${mx !== mn ? `–$${mx.toFixed(0)}` : ''}/pc` : 'No price set'}
+                    </span>
+                  );
+                })()}
               </button>
             ))}
           </div>
@@ -345,10 +436,20 @@ function DecorationAddForm({
     setPriceManual(false);
   }, [selectedGroupId]);
 
+  // When qty is known, look up the exact tier. When qty=0, fall back to the
+  // first (lowest) tier so the user sees a real price from the matrix immediately.
   const autoPrice = useMemo(() => {
-    if (!selectedGroupId || totalQtyVal <= 0) return 0;
-    return lookupDecorationPrice(decoMatrix, selectedGroupId, totalQtyVal, colIndex);
+    if (!selectedGroupId) return 0;
+    const lookupQty = totalQtyVal > 0
+      ? totalQtyVal
+      : decoMatrix
+          .filter((r) => r.group_id === selectedGroupId)
+          .sort((a, b) => a.qty_min - b.qty_min)[0]?.qty_min ?? 0;
+    if (lookupQty <= 0) return 0;
+    return lookupDecorationPrice(decoMatrix, selectedGroupId, lookupQty, colIndex);
   }, [selectedGroupId, totalQtyVal, colIndex, decoMatrix]);
+
+  const autoPriceIsPreview = totalQtyVal === 0 && autoPrice > 0;
 
   useEffect(() => {
     if (!priceManual) setPrice(autoPrice);
@@ -480,11 +581,22 @@ function DecorationAddForm({
       <div className="space-y-1">
         <Label className="text-xs flex items-center gap-1">
           Price / pc
-          {!priceManual && autoPrice > 0 && (
-            <span className="text-xs font-normal" style={{ color: 'hsl(218 91% 57%)' }}>(auto)</span>
+          {!priceManual && autoPrice > 0 && !autoPriceIsPreview && (
+            <span className="text-xs font-normal" style={{ color: 'hsl(218 91% 57%)' }}>
+              (auto · {totalQtyVal} pcs)
+            </span>
           )}
-          {totalQtyVal === 0 && (
-            <span className="text-xs font-normal" style={{ color: 'hsl(var(--muted-foreground))' }}>(enter qty first for auto-pricing)</span>
+          {!priceManual && autoPriceIsPreview && (
+            <span className="text-xs font-normal" style={{ color: '#F59E0B' }}>
+              (preview — updates with qty)
+            </span>
+          )}
+          {!priceManual && autoPrice === 0 && (
+            <span className="text-xs font-normal" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              {decoMatrix.some((r) => r.group_id === selectedGroupId)
+                ? '(no tier for this qty — enter manually)'
+                : '(no matrix data — enter manually)'}
+            </span>
           )}
         </Label>
         <div className="flex gap-1">
@@ -527,61 +639,102 @@ function DecorationAddForm({
 
 function SizeMatrixInput({
   sizes,
-  upcharges,
   onChange,
+  sizeUnitPrices = {},
+  onPriceChange,
 }: {
   sizes: Record<string, number>;
-  upcharges: Record<string, number>;
   onChange: (sizes: Record<string, number>) => void;
+  sizeUnitPrices?: Record<string, number>;
+  onPriceChange?: (size: string, price: number) => void;
 }) {
+  const catalogSizes = Object.keys(sizeUnitPrices);
+  const displaySizes = [...new Set([...STANDARD_SIZES, ...catalogSizes])];
   const total = totalQty(sizes);
 
   return (
-    <div>
-      <div className="flex gap-1.5 flex-wrap">
-        {STANDARD_SIZES.map((size) => {
-          const upcharge = upcharges[size] ?? 0;
+    <div className="overflow-x-auto -mx-1">
+      <div className="flex gap-1.5 items-end px-1" style={{ minWidth: 'max-content' }}>
+        {displaySizes.map((size) => {
+          const qty = sizes[size] || 0;
+          const price = sizeUnitPrices[size] ?? 0;
+          const hasPrice = price > 0;
+          const hasQty = qty > 0;
           return (
-            <div key={size} className="flex flex-col items-center gap-0.5">
-              <span className="text-xs font-semibold" style={{ color: 'hsl(var(--muted-foreground))' }}>{size}</span>
+            <div key={size} className="flex flex-col items-center gap-0.5" style={{ width: 52 }}>
+              <span
+                className="text-[11px] font-bold uppercase tracking-wide"
+                style={{ color: hasQty ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))' }}
+              >
+                {size}
+              </span>
+              {/* Qty input */}
               <input
                 type="text"
                 inputMode="numeric"
-                className="w-12 h-8 rounded-md border text-center text-sm font-medium outline-none transition-colors focus:border-blue-400"
-                style={{ borderColor: 'hsl(var(--border))' }}
-                value={sizes[size] || ''}
+                className="h-9 rounded-md border text-center text-sm font-semibold outline-none transition-all focus:ring-1 focus:ring-blue-400 w-full"
+                style={{
+                  borderColor: hasQty ? 'hsl(218 91% 57% / 0.5)' : 'hsl(var(--border))',
+                  backgroundColor: hasQty ? 'hsl(218 91% 57% / 0.06)' : 'transparent',
+                  color: hasQty ? 'hsl(218 91% 57%)' : 'inherit',
+                }}
+                value={qty || ''}
                 placeholder="0"
                 onChange={(e) => {
-                  const v = e.target.value;
-                  if (/^\d*$/.test(v)) {
-                    onChange({ ...sizes, [size]: parseInt(v) || 0 });
-                  }
+                  if (/^\d*$/.test(e.target.value))
+                    onChange({ ...sizes, [size]: parseInt(e.target.value) || 0 });
                 }}
               />
-              {upcharge > 0 && (
-                <span className="text-xs" style={{ color: 'hsl(38 92% 50%)' }}>+${upcharge}</span>
-              )}
+              {/* Price input per size */}
+              <div className="relative w-full">
+                <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] font-bold pointer-events-none" style={{ color: 'hsl(var(--muted-foreground))' }}>$</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  className="h-6 w-full rounded border text-center text-[11px] font-semibold outline-none transition-all focus:ring-1 focus:ring-blue-400 pl-3 pr-0.5"
+                  style={{
+                    borderColor: hasPrice ? 'hsl(218 91% 57% / 0.4)' : 'hsl(var(--border))',
+                    backgroundColor: hasPrice ? 'hsl(218 91% 57% / 0.05)' : 'hsl(var(--muted) / 0.4)',
+                    color: hasPrice ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))',
+                  }}
+                  value={price || ''}
+                  placeholder="—"
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value) || 0;
+                    onPriceChange?.(size, val);
+                  }}
+                />
+              </div>
             </div>
           );
         })}
-        <div className="flex flex-col items-center justify-end pb-0.5 gap-0.5 ml-2">
-          <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>Total</span>
-          <span
-            className="h-8 flex items-center px-2 font-bold text-sm rounded-md"
-            style={{
-              backgroundColor: total > 0 ? 'hsl(218 91% 57% / 0.1)' : 'hsl(var(--muted))',
-              color: total > 0 ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))',
-            }}
-          >
-            {total}
+        <div
+          className="flex flex-col items-center gap-0.5 ml-1 pl-2 border-l shrink-0"
+          style={{ borderColor: 'hsl(var(--border))', width: 46 }}
+        >
+          <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: 'hsl(var(--muted-foreground))' }}>
+            Total
           </span>
+          <div
+            className="h-9 flex items-center justify-center w-full rounded-md"
+            style={{ backgroundColor: total > 0 ? 'hsl(218 91% 57% / 0.1)' : 'hsl(var(--muted))' }}
+          >
+            <span
+              className="font-bold text-sm"
+              style={{ color: total > 0 ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))' }}
+            >
+              {total || '0'}
+            </span>
+          </div>
+          {/* spacer to align with price row */}
+          <div className="h-6" />
         </div>
       </div>
     </div>
   );
 }
 
-// ── Garment Line Card ─────────────────────────────────────────────────────────
+// ── Garment Line Card ─────────────────────────────────────────────
 
 function GarmentLineCard({
   line,
@@ -602,24 +755,22 @@ function GarmentLineCard({
 }) {
   const [showPicker, setShowPicker] = useState(!line.description);
   const [showDecoForm, setShowDecoForm] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const [collapsed, setCollapsed] = useState(false);
 
   const qty = totalQty(line.sizes);
-  const upcharges = useMemo(() => {
-    const g = garments.find((g) => g.id === line.garmentId);
-    return (g?.size_upcharges ?? {}) as Record<string, number>;
-  }, [garments, line.garmentId]);
-
-  const autoBlank = blankPricePerPiece(line.blankCost, line.markupPct);
-  const autoDecoTotal = line.decorations.reduce((s, d) => s + d.unitPrice, 0);
-  const autoFinishTotal = line.finishing.reduce((s, f) => s + f.unitPrice, 0);
-  const autoUnit = autoBlank + autoDecoTotal + autoFinishTotal;
-  const unitPrice = line.priceOverridden ? line.overriddenPrice : autoUnit;
-  const lineTotal = qty * unitPrice;
+  const breakdown = computeLineBreakdown(line, decoMatrix);
+  const hasSizeOverrides = Object.keys(line.sizeUnitPrices).length > 0;
+  const unitPriceFlat = effectiveUnitPrice(line);
 
   const update = (patch: Partial<GarmentLine>) => onChange({ ...line, ...patch });
 
   const selectGarment = (g: Garment) => {
+    const catalogPrices = (g.size_upcharges as Record<string, number> | null) ?? {};
+    const sizeUnitPrices = Object.fromEntries(Object.entries(catalogPrices).filter(([, v]) => v > 0));
+    const newSizes = { ...line.sizes };
+    for (const s of Object.keys(sizeUnitPrices)) {
+      if (!(s in newSizes)) newSizes[s] = 0;
+    }
     update({
       garmentId: g.id,
       description: g.name + (g.color ? ` — ${g.color}` : ''),
@@ -628,178 +779,156 @@ function GarmentLineCard({
       color: g.color ?? '',
       blankCost: g.base_cost,
       markupPct: g.markup_value,
+      sizeUnitPrices,
+      sizes: newSizes,
     });
     setShowPicker(false);
   };
 
   const removeDecoration = (tempId: string) =>
     update({ decorations: line.decorations.filter((d) => d.tempId !== tempId) });
-
   const removeFinishing = (tempId: string) =>
     update({ finishing: line.finishing.filter((f) => f.tempId !== tempId) });
-
   const addFinishing = (svc: FinishingService) => {
     if (line.finishing.some((f) => f.serviceId === svc.id)) return;
     update({
-      finishing: [
-        ...line.finishing,
-        { tempId: genTempId(), serviceId: svc.id, serviceName: svc.name, unitPrice: svc.unit_price },
-      ],
+      finishing: [...line.finishing, { tempId: genTempId(), serviceId: svc.id, serviceName: svc.name, unitPrice: svc.unit_price }],
     });
   };
 
   return (
-    <div
-      className="rounded-xl border overflow-hidden"
-      style={{ borderColor: 'hsl(var(--border))', borderLeft: '3px solid hsl(218 91% 57%)' }}
-    >
-      {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 bg-white dark:bg-transparent">
-        <button
-          type="button"
-          className="p-0.5 rounded hover:bg-accent"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {expanded
-            ? <ChevronUp className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
-            : <ChevronDown className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />}
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: 'hsl(var(--border))', borderLeft: '3px solid hsl(218 91% 57%)' }}>
+
+      {/* ── Card Header ── */}
+      <div className="flex items-center gap-3 px-4 py-3" style={{ backgroundColor: 'hsl(218 91% 57% / 0.03)' }}>
+        <button type="button" className="p-0.5 rounded hover:bg-accent shrink-0" onClick={() => setCollapsed(v => !v)}>
+          {collapsed
+            ? <ChevronDown className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />
+            : <ChevronUp className="h-4 w-4" style={{ color: 'hsl(var(--muted-foreground))' }} />}
         </button>
-        <div
-          className="h-8 w-8 rounded-lg shrink-0 flex items-center justify-center"
-          style={{ backgroundColor: 'hsl(218 91% 57% / 0.1)' }}
-        >
+        <div className="h-8 w-8 rounded-lg shrink-0 flex items-center justify-center" style={{ backgroundColor: 'hsl(218 91% 57% / 0.12)' }}>
           <Shirt className="h-4 w-4" style={{ color: 'hsl(218 91% 57%)' }} />
         </div>
         <div className="flex-1 min-w-0">
-          {line.description ? (
-            <p className="font-semibold text-sm truncate">{line.description}</p>
-          ) : (
-            <p className="text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Select a garment from catalog or enter manually
-            </p>
-          )}
+          {line.description
+            ? <p className="font-semibold text-sm truncate">{line.description}</p>
+            : <p className="text-sm" style={{ color: 'hsl(var(--muted-foreground))' }}>Select garment or enter manually</p>}
           {qty > 0 && (
-            <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              {qty} pcs · {formatCurrency(unitPrice)}/pc · {formatCurrency(lineTotal)} total
+            <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+              {qty} pcs · <span className="font-semibold" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(breakdown.total)}</span>
             </p>
           )}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            className="p-1.5 rounded hover:bg-accent"
-            onClick={() => setShowPicker((v) => !v)}
-            title="Change garment"
-          >
-            <Pencil className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
-          </button>
-          <button
-            type="button"
-            className="p-1.5 rounded hover:bg-accent text-red-400 hover:text-red-600"
-            onClick={onRemove}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <button type="button" className="p-1.5 rounded hover:bg-accent shrink-0" onClick={() => setShowPicker(v => !v)} title="Change garment">
+          <Pencil className="h-3.5 w-3.5" style={{ color: 'hsl(var(--muted-foreground))' }} />
+        </button>
+        <button type="button" className="p-1.5 rounded hover:bg-accent text-red-400 hover:text-red-600 shrink-0" onClick={onRemove}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       </div>
 
-      {/* Garment picker */}
+      {/* ── Garment picker ── */}
       {showPicker && (
-        <div className="px-4 pb-3">
-          <GarmentCatalogPicker
-            garments={garments}
-            onSelect={selectGarment}
-            onClose={() => setShowPicker(false)}
-          />
+        <div className="px-4 pb-3 pt-1 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+          <GarmentCatalogPicker garments={garments} onSelect={selectGarment} onClose={() => setShowPicker(false)} />
         </div>
       )}
 
-      {expanded && !showPicker && (
-        <div
-          className="px-4 pb-4 space-y-4 border-t"
-          style={{ borderColor: 'hsl(var(--border))' }}
-        >
-          {/* Manual description override */}
-          <div className="pt-3 space-y-1">
-            <Label className="text-xs">Description (customer-facing)</Label>
-            <Input
-              className="h-8 text-sm"
-              placeholder="e.g. Gildan 5000 Black T-Shirt"
-              value={line.description}
-              onChange={(e) => update({ description: e.target.value })}
-            />
+      {/* ── Card Body ── */}
+      {!showPicker && !collapsed && (
+        <div className="border-t divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
+
+          {/* Description */}
+          <div className="px-4 py-3 space-y-1">
+            <Label className="text-xs">Description</Label>
+            <Input className="h-8 text-sm" placeholder="e.g. Gildan 5000 Black T-Shirt" value={line.description} onChange={(e) => update({ description: e.target.value })} />
           </div>
 
-          {/* Size Matrix */}
-          <div className="space-y-2">
+          {/* Sizes & Pricing */}
+          <div className="px-4 py-3 space-y-2">
             <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Sizes
+              Sizes & Quantities
+              <span className="ml-1.5 font-normal normal-case" style={{ color: 'hsl(218 91% 57%)' }}>
+                {hasSizeOverrides ? '· per-size pricing (editable)' : '· enter $ per size to override'}
+              </span>
             </p>
             <SizeMatrixInput
               sizes={line.sizes}
-              upcharges={upcharges}
               onChange={(sizes) => update({ sizes })}
+              sizeUnitPrices={line.sizeUnitPrices}
+              onPriceChange={(size, price) => {
+                const updated = { ...line.sizeUnitPrices };
+                if (price > 0) updated[size] = price;
+                else delete updated[size];
+                update({ sizeUnitPrices: updated });
+              }}
             />
+            {/* Flat price input (when no per-size overrides) */}
+            {!hasSizeOverrides && (
+              <div className="flex items-center gap-2 pt-1">
+                <Label className="text-xs shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>Price / pc</Label>
+                <div className="flex">
+                  <span className="h-8 flex items-center px-2.5 text-xs border-y border-l rounded-l-md" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted))' }}>$</span>
+                  <Input
+                    className="h-8 text-sm rounded-l-none w-24"
+                    type="number" min="0" step="0.01" placeholder="0.00"
+                    value={line.priceOverridden ? (line.overriddenPrice || '') : (unitPriceFlat > 0 ? unitPriceFlat : '')}
+                    onChange={(e) => update({ priceOverridden: true, overriddenPrice: parseFloat(e.target.value) || 0 })}
+                  />
+                </div>
+                {qty > 0 && unitPriceFlat > 0 && (
+                  <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                    × {qty} = <strong style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(qty * unitPriceFlat)}</strong>
+                  </span>
+                )}
+                {line.priceOverridden && (
+                  <button type="button" className="text-xs" style={{ color: 'hsl(218 91% 57%)' }}
+                    onClick={() => update({ priceOverridden: false, overriddenPrice: 0 })}>↺ Reset</button>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Pricing */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">Blank Cost / pc</Label>
-              <div className="flex gap-1.5">
-                <span className="h-8 flex items-center px-2.5 text-sm rounded-l-md border-y border-l" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted))' }}>$</span>
-                <Input
-                  className="h-8 text-sm rounded-l-none"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={line.blankCost || ''}
-                  placeholder="0.00"
-                  onChange={(e) => update({ blankCost: parseFloat(e.target.value) || 0 })}
-                />
-              </div>
+          {/* Embellishments */}
+          <div className="px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>Embellishments</p>
+              {!showDecoForm && decoGroups.length > 0 && (
+                <button type="button" className="flex items-center gap-1 text-xs font-medium" style={{ color: 'hsl(218 91% 57%)' }} onClick={() => setShowDecoForm(true)}>
+                  <Plus className="h-3 w-3" /> Add
+                </button>
+              )}
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Markup %</Label>
-              <div className="flex gap-1.5">
-                <Input
-                  className="h-8 text-sm"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={Math.round(line.markupPct * 100) || ''}
-                  placeholder="40"
-                  onChange={(e) => update({ markupPct: (parseFloat(e.target.value) || 0) / 100 })}
-                />
-                <span className="h-8 flex items-center px-2.5 text-sm rounded-r-md border-y border-r" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted))' }}>%</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Decorations */}
-          <div className="space-y-2">
-            <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Decorations
-            </p>
             {line.decorations.length > 0 && (
-              <div className="rounded-lg border divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
+              <div className="rounded-lg border overflow-hidden divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
                 {line.decorations.map((d) => {
                   const colLabel = d.groupColLabels[d.colIndex] ?? `Col ${d.colIndex + 1}`;
+                  const unitP = qty > 0
+                    ? lookupDecorationPrice(decoMatrix, d.groupId, qty, d.colIndex) || d.unitPrice
+                    : d.unitPrice;
                   return (
-                    <div key={d.tempId} className="flex items-center gap-2 px-3 py-2">
+                    <div key={d.tempId} className="flex items-center gap-3 px-3 py-2">
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium truncate">
-                          {d.location} · {d.groupName} — {colLabel}
-                        </p>
+                        <p className="text-xs font-semibold">{d.location} · {d.groupName}</p>
+                        <p className="text-[11px]" style={{ color: 'hsl(var(--muted-foreground))' }}>{colLabel}</p>
                       </div>
-                      <span className="text-xs font-semibold shrink-0" style={{ color: 'hsl(218 91% 57%)' }}>
-                        {formatCurrency(d.unitPrice)}/pc
-                      </span>
-                      <button
-                        type="button"
-                        className="p-1 rounded hover:bg-accent text-red-400 hover:text-red-600 shrink-0"
-                        onClick={() => removeDecoration(d.tempId)}
-                      >
+                      {unitP > 0 ? (
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-semibold" style={{ color: 'hsl(218 91% 57%)' }}>
+                            {formatCurrency(unitP)}/pc
+                          </p>
+                          {qty > 0 && (
+                            <p className="text-[10px]" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                              {qty}× = {formatCurrency(unitP * qty)}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs shrink-0 font-medium px-2 py-0.5 rounded-full" style={{ backgroundColor: 'hsl(218 91% 57% / 0.08)', color: 'hsl(218 91% 57%)' }}>
+                          qty-based
+                        </span>
+                      )}
+                      <button type="button" className="p-1 rounded hover:bg-accent text-red-400 hover:text-red-600 shrink-0" onClick={() => removeDecoration(d.tempId)}>
                         <X className="h-3 w-3" />
                       </button>
                     </div>
@@ -816,158 +945,97 @@ function GarmentLineCard({
                 onCancel={() => setShowDecoForm(false)}
               />
             ) : (
-              <button
-                type="button"
-                className="flex items-center gap-1.5 text-xs font-medium transition-colors hover:opacity-80"
-                style={{ color: 'hsl(218 91% 57%)' }}
-                onClick={() => setShowDecoForm(true)}
-              >
-                <Plus className="h-3.5 w-3.5" /> Add Decoration
-              </button>
+              decoGroups.length === 0 && (
+                <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>No decoration types in catalog yet.</p>
+              )
             )}
           </div>
 
           {/* Finishing */}
-          <div className="space-y-2">
-            <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>
-              Finishing
-            </p>
+          <div className="px-4 py-3 space-y-2">
+            <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>Finishing</p>
             {line.finishing.length > 0 && (
-              <div className="rounded-lg overflow-hidden" style={{ boxShadow: '0 0 0 1px rgba(0,0,0,0.06)' }}>
+              <div className="rounded-lg border overflow-hidden divide-y" style={{ borderColor: 'hsl(var(--border))' }}>
                 {line.finishing.map((f) => (
-                  <div key={f.tempId} className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
+                  <div key={f.tempId} className="flex items-center gap-2 px-3 py-2">
                     <p className="flex-1 text-xs font-medium truncate">{f.serviceName}</p>
-                    <Input
-                      className="h-7 text-xs w-20 shrink-0"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={f.unitPrice || ''}
-                      placeholder="0.00"
-                      onChange={(e) => {
-                        update({
-                          finishing: line.finishing.map((fi) =>
-                            fi.tempId === f.tempId
-                              ? { ...fi, unitPrice: parseFloat(e.target.value) || 0 }
-                              : fi,
-                          ),
-                        });
-                      }}
-                    />
-                    <span className="text-xs shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>/pc</span>
-                    <button
-                      type="button"
-                      className="p-1 rounded hover:bg-accent text-red-400 hover:text-red-600 shrink-0"
-                      onClick={() => removeFinishing(f.tempId)}
-                    >
+                    <div className="flex shrink-0">
+                      <span className="h-7 flex items-center px-1.5 text-xs border-y border-l rounded-l" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted))' }}>$</span>
+                      <Input
+                        className="h-7 text-xs w-16 rounded-l-none"
+                        type="number" min="0" step="0.01"
+                        value={f.unitPrice || ''} placeholder="0.00"
+                        onChange={(e) => update({ finishing: line.finishing.map((fi) => fi.tempId === f.tempId ? { ...fi, unitPrice: parseFloat(e.target.value) || 0 } : fi) })}
+                      />
+                    </div>
+                    <span className="text-[11px] shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>/pc</span>
+                    <button type="button" className="p-1 rounded hover:bg-accent text-red-400 hover:text-red-600 shrink-0" onClick={() => removeFinishing(f.tempId)}>
                       <X className="h-3 w-3" />
                     </button>
                   </div>
                 ))}
               </div>
             )}
-            {/* Finishing service picker */}
             <div className="flex flex-wrap gap-1.5">
-              {finishingServices
-                .filter((s) => !line.finishing.some((f) => f.serviceId === s.id))
-                .map((svc) => (
-                  <button
-                    key={svc.id}
-                    type="button"
-                    className="flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-colors hover:bg-accent"
-                    style={{ border: '1px solid rgba(0,0,0,0.08)', backgroundColor: 'hsl(var(--muted)/0.4)' }}
-                    onClick={() => addFinishing(svc)}
-                  >
-                    <Plus className="h-3 w-3" />
-                    {svc.name}
-                    <span className="font-semibold" style={{ color: 'hsl(218 91% 57%)' }}>
-                      {formatCurrency(svc.unit_price)}
-                    </span>
-                  </button>
-                ))}
+              {finishingServices.filter((s) => !line.finishing.some((f) => f.serviceId === s.id)).map((svc) => (
+                <button key={svc.id} type="button"
+                  className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-colors hover:bg-accent"
+                  style={{ border: '1px solid rgba(0,0,0,0.08)', backgroundColor: 'hsl(var(--muted)/0.4)' }}
+                  onClick={() => addFinishing(svc)}>
+                  <Plus className="h-3 w-3" />{svc.name}
+                  <span className="font-semibold ml-0.5" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(svc.unit_price)}</span>
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Pricing summary + override */}
-          <div
-            className="rounded-lg border p-3 space-y-2"
-            style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted)/0.3)' }}
-          >
-            {/* Auto breakdown */}
-            {!line.priceOverridden && (
-              <div className="text-xs space-y-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                <div className="flex justify-between">
-                  <span>Blank ({Math.round(line.markupPct * 100)}% markup)</span>
-                  <span>{formatCurrency(autoBlank)}/pc</span>
-                </div>
-                {autoDecoTotal > 0 && (
-                  <div className="flex justify-between">
-                    <span>Decoration</span>
-                    <span>{formatCurrency(autoDecoTotal)}/pc</span>
+          {/* Line Breakdown */}
+          {qty > 0 && (
+            <div className="px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: 'hsl(var(--muted-foreground))' }}>Line Breakdown</p>
+              <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'hsl(218 91% 57% / 0.2)' }}>
+                {breakdown.groups.map((g, i) => (
+                  <div key={i} className="flex items-start justify-between gap-3 px-3 py-2 border-b last:border-b-0" style={{ borderColor: 'hsl(218 91% 57% / 0.1)', backgroundColor: i % 2 === 0 ? 'transparent' : 'hsl(218 91% 57% / 0.02)' }}>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-semibold">{g.sizes.join(', ')}</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: 'hsl(218 91% 57% / 0.1)', color: 'hsl(218 91% 57%)' }}>
+                          {g.qty} pcs
+                        </span>
+                      </div>
+                      {hasSizeOverrides && (
+                        <p className="text-[11px] mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                          {formatCurrency(g.price)} garment
+                          {g.decoPerPc > 0 && <span> + {formatCurrency(g.decoPerPc)} deco ({g.qty} pcs tier)</span>}
+                          {g.finishPerPc > 0 && <span> + {formatCurrency(g.finishPerPc)} finish</span>}
+                          <span style={{ color: 'hsl(218 91% 57%)' }}> = {formatCurrency(g.totalPerPc)}/pc</span>
+                        </p>
+                      )}
+                      {!hasSizeOverrides && (line.decorations.length > 0 || line.finishing.length > 0) && (
+                        <p className="text-[11px] mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                          {[
+                            line.decorations.length > 0 && `deco incl.`,
+                            line.finishing.length > 0 && `finish incl.`,
+                          ].filter(Boolean).join(' · ')}
+                          <span style={{ color: 'hsl(218 91% 57%)' }}> {formatCurrency(g.totalPerPc)}/pc</span>
+                        </p>
+                      )}
+                    </div>
+                    <span className="text-sm font-bold tabular-nums shrink-0" style={{ color: 'hsl(218 91% 57%)' }}>
+                      {formatCurrency(g.groupTotal)}
+                    </span>
                   </div>
-                )}
-                {autoFinishTotal > 0 && (
-                  <div className="flex justify-between">
-                    <span>Finishing</span>
-                    <span>{formatCurrency(autoFinishTotal)}/pc</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-center justify-between pt-1">
-              <div>
-                <span className="text-sm font-bold">{formatCurrency(unitPrice)}/pc</span>
-                {qty > 0 && (
-                  <span className="text-xs ml-2" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    × {qty} = <strong>{formatCurrency(lineTotal)}</strong>
+                ))}
+                <div className="flex items-center justify-between px-3 py-2" style={{ backgroundColor: 'hsl(218 91% 57% / 0.05)' }}>
+                  <span className="text-xs font-bold">Line Total</span>
+                  <span className="text-sm font-bold tabular-nums" style={{ color: 'hsl(218 91% 57%)' }}>
+                    {formatCurrency(breakdown.total)}
                   </span>
-                )}
+                </div>
               </div>
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="rounded"
-                  checked={line.priceOverridden}
-                  onChange={(e) => {
-                    update({
-                      priceOverridden: e.target.checked,
-                      overriddenPrice: e.target.checked ? autoUnit : 0,
-                    });
-                  }}
-                />
-                Override price
-              </label>
             </div>
-            {line.priceOverridden && (
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="space-y-1">
-                  <Label className="text-xs">Override price / pc</Label>
-                  <div className="flex gap-1">
-                    <span className="h-7 flex items-center px-2 text-xs rounded-l-md border-y border-l" style={{ borderColor: 'hsl(38 92% 50%)', backgroundColor: 'hsl(38 92% 50% / 0.08)' }}>$</span>
-                    <Input
-                      className="h-7 text-xs rounded-l-none"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={line.overriddenPrice || ''}
-                      placeholder={autoUnit.toFixed(2)}
-                      style={{ borderColor: 'hsl(38 92% 50%)' }}
-                      onChange={(e) => update({ overriddenPrice: parseFloat(e.target.value) || 0 })}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Override reason</Label>
-                  <Input
-                    className="h-7 text-xs"
-                    placeholder="e.g. repeat customer discount"
-                    value={line.overrideReason}
-                    onChange={(e) => update({ overrideReason: e.target.value })}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
+          )}
+
         </div>
       )}
     </div>
@@ -1042,6 +1110,7 @@ function PriceBreakdownPanel({
   discountValue,
   taxRate,
   depositAmount,
+  decoMatrix,
 }: {
   garmentLines: GarmentLine[];
   setupFees: SetupFeeItem[];
@@ -1049,9 +1118,10 @@ function PriceBreakdownPanel({
   discountValue: number;
   taxRate: number;
   depositAmount: number;
+  decoMatrix: DecorationMatrixRow[];
 }) {
   const billableItems = [
-    ...garmentLines.map((l) => ({ qty: totalQty(l.sizes), unit_price: effectiveUnitPrice(l) })),
+    ...garmentLines.map((l) => ({ qty: 1, unit_price: computeLineBreakdown(l, decoMatrix).total })),
     ...setupFees.map((f) => ({ qty: f.qty, unit_price: f.unitPrice })),
   ];
   const sub = calcSubtotal(billableItems);
@@ -1087,99 +1157,80 @@ function PriceBreakdownPanel({
         {/* Garment lines */}
         {garmentLines.map((line) => {
           const qty = totalQty(line.sizes);
+          const bd = computeLineBreakdown(line, decoMatrix);
           if (!line.description && qty === 0) return null;
 
-          const blank = blankPricePerPiece(line.blankCost, line.markupPct);
-          const decoTotal = line.decorations.reduce((s, d) => s + d.unitPrice, 0);
-          const finishTotal = line.finishing.reduce((s, f) => s + f.unitPrice, 0);
-          const autoUnit = blank + decoTotal + finishTotal;
-          const unitPrice = effectiveUnitPrice(line);
-          const lineTotal = qty * unitPrice;
-
           return (
-            <div key={line.tempId} className="space-y-0">
-              {/* Garment name */}
-              <p
-                className="text-xs font-bold truncate pb-2 mb-2 border-b"
-                style={{ borderColor: 'hsl(var(--border))', color: 'hsl(218 91% 57%)' }}
-              >
+            <div key={line.tempId} className="space-y-1">
+              <p className="text-xs font-bold truncate pb-1.5 mb-1.5 border-b" style={{ borderColor: 'hsl(var(--border))', color: 'hsl(218 91% 57%)' }}>
                 {line.description || 'Garment'}
-                {qty > 0 && <span className="font-normal ml-1" style={{ color: 'hsl(var(--muted-foreground))' }}>× {qty}</span>}
+                {qty > 0 && <span className="font-normal ml-1" style={{ color: 'hsl(var(--muted-foreground))' }}>× {qty} pcs</span>}
               </p>
 
-              {/* Blank cost row */}
-              <div className="flex items-center justify-between py-1">
-                <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                  Blank ({Math.round(line.markupPct * 100)}% markup)
-                </span>
-                <span className="text-xs font-medium tabular-nums">{formatCurrency(blank)}/pc</span>
-              </div>
-
-              {/* Decorations */}
-              {line.decorations.length > 0 && (
-                <div className="mt-1 mb-0.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    Decorations
-                  </p>
-                  {line.decorations.map((d) => {
-                    const colLabel = d.groupColLabels[d.colIndex] ?? `Col ${d.colIndex + 1}`;
-                    return (
-                      <div key={d.tempId} className="flex items-start justify-between py-0.5 gap-2">
-                        <span className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                          {d.location} · {d.groupName}
-                          <span className="block text-[10px] opacity-70">{colLabel}</span>
-                        </span>
-                        <span className="text-xs font-medium tabular-nums shrink-0">{formatCurrency(d.unitPrice)}/pc</span>
+              {bd.hasSizeOverrides ? (
+                <div className="space-y-1.5">
+                  {bd.groups.map((g, gi) => (
+                    <div key={gi} className="space-y-0.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold">{g.sizes.join(', ')}</span>
+                        <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{g.qty} pcs</span>
                       </div>
-                    );
-                  })}
+                      <div className="pl-2 space-y-0.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span style={{ color: 'hsl(var(--muted-foreground))' }}>Garment</span>
+                          <span className="tabular-nums">{formatCurrency(g.price)}/pc</span>
+                        </div>
+                        {g.decoPerPc > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span style={{ color: 'hsl(var(--muted-foreground))' }}>Deco ({g.qty} pcs)</span>
+                            <span className="tabular-nums">{formatCurrency(g.decoPerPc)}/pc</span>
+                          </div>
+                        )}
+                        {g.finishPerPc > 0 && (
+                          <div className="flex items-center justify-between text-xs">
+                            <span style={{ color: 'hsl(var(--muted-foreground))' }}>Finishing</span>
+                            <span className="tabular-nums">{formatCurrency(g.finishPerPc)}/pc</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between text-xs font-medium pt-0.5">
+                          <span>{formatCurrency(g.totalPerPc)}/pc × {g.qty}</span>
+                          <span className="tabular-nums" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(g.groupTotal)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              )}
-
-              {/* Finishing */}
-              {line.finishing.length > 0 && (
-                <div className="mt-1 mb-0.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    Finishing
-                  </p>
+              ) : (
+                <div className="space-y-0.5">
+                  {line.blankCost > 0 && (
+                    <div className="flex items-center justify-between py-0.5">
+                      <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                        Blank ({Math.round(line.markupPct * 100)}% markup)
+                      </span>
+                      <span className="text-xs tabular-nums">{formatCurrency(blankPricePerPiece(line.blankCost, line.markupPct))}/pc</span>
+                    </div>
+                  )}
+                  {line.decorations.map((d) => (
+                    <div key={d.tempId} className="flex items-start justify-between py-0.5 gap-2">
+                      <span className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                        {d.location} · {d.groupName}
+                      </span>
+                      <span className="text-xs tabular-nums shrink-0">{formatCurrency(d.unitPrice)}/pc</span>
+                    </div>
+                  ))}
                   {line.finishing.map((f) => (
                     <div key={f.tempId} className="flex items-center justify-between py-0.5">
                       <span className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{f.serviceName}</span>
-                      <span className="text-xs font-medium tabular-nums shrink-0">{formatCurrency(f.unitPrice)}/pc</span>
+                      <span className="text-xs tabular-nums shrink-0">{formatCurrency(f.unitPrice)}/pc</span>
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* Override badge */}
-              {line.priceOverridden && (
-                <div
-                  className="flex items-center justify-between py-1 px-2 rounded-md mt-1"
-                  style={{ backgroundColor: 'hsl(38 92% 50% / 0.1)' }}
-                >
-                  <span className="text-xs font-medium" style={{ color: 'hsl(38 92% 40%)' }}>Price override</span>
-                  <span className="text-xs font-semibold tabular-nums" style={{ color: 'hsl(38 92% 40%)' }}>
-                    {formatCurrency(unitPrice)}/pc
-                  </span>
-                </div>
-              )}
-
-              {/* Line subtotal */}
-              <div
-                className="flex items-center justify-between pt-2 mt-2 border-t"
-                style={{ borderColor: 'hsl(var(--border))' }}
-              >
-                {!line.priceOverridden ? (
-                  <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    {formatCurrency(autoUnit)}/pc × {qty}
-                  </span>
-                ) : (
-                  <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                    {formatCurrency(unitPrice)}/pc × {qty}
-                  </span>
-                )}
-                <span className="text-sm font-bold" style={{ color: 'hsl(218 91% 57%)' }}>
-                  {formatCurrency(lineTotal)}
+              <div className="flex items-center justify-between pt-1.5 mt-1 border-t" style={{ borderColor: 'hsl(var(--border))' }}>
+                <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{qty} pcs</span>
+                <span className="text-sm font-bold tabular-nums" style={{ color: 'hsl(218 91% 57%)' }}>
+                  {formatCurrency(bd.total)}
                 </span>
               </div>
             </div>
@@ -1331,41 +1382,68 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
     const garmentItems = allItems.filter((i) => i.line_type === 'garment');
     const feeItems = allItems.filter((i) => i.line_type === 'setup_fee');
 
+    // Group order_items that originated from the same garment line (same garment_id + description + costs)
+    const garmentGroups = new Map<string, typeof garmentItems>();
+    for (const item of garmentItems) {
+      const key = `${item.garment_id ?? ''}||${item.description}||${item.blank_cost ?? 0}||${item.markup_pct ?? 0}`;
+      if (!garmentGroups.has(key)) garmentGroups.set(key, []);
+      garmentGroups.get(key)!.push(item);
+    }
+
     setGarmentLines(
-      garmentItems.length > 0
-        ? garmentItems.map((item) => ({
-            tempId: genTempId(),
-            garmentId: item.garment_id ?? null,
-            description: item.description,
-            brand: '',
-            styleNumber: '',
-            color: item.color ?? '',
-            sizes: (item.size_matrix as Record<string, number>) ?? { XS: 0, S: 0, M: 0, L: 0, XL: 0, '2XL': 0, '3XL': 0 },
-            blankCost: item.blank_cost ?? 0,
-            markupPct: item.markup_pct ?? 0.40,
-            decorations: (item.order_item_decorations ?? []).map((d) => {
-              const group = d.decoration_group_id ? groupsMap.get(d.decoration_group_id) : undefined;
-              return {
-                tempId: genTempId(),
-                groupId: d.decoration_group_id ?? '',
-                groupName: group?.name ?? d.decoration_type,
-                groupColLabels: group?.col_labels ?? [],
-                colIndex: d.col_index ?? 0,
-                location: d.location,
-                unitPrice: d.unit_price,
-              };
-            }),
-            finishing: (item.order_item_finishing ?? []).map((f) => ({
+      garmentGroups.size > 0
+        ? Array.from(garmentGroups.values()).map((items) => {
+            const first = items[0];
+            const isMultiGroup = items.length > 1;
+
+            // Merge all size_matrices into one
+            const mergedSizes: Record<string, number> = { XS: 0, S: 0, M: 0, L: 0, XL: 0, '2XL': 0, '3XL': 0 };
+            const sizeUnitPrices: Record<string, number> = {};
+            for (const item of items) {
+              const matrix = (item.size_matrix as Record<string, number>) ?? {};
+              for (const [size, qty] of Object.entries(matrix)) {
+                mergedSizes[size] = (mergedSizes[size] || 0) + (qty || 0);
+                if (isMultiGroup && (qty || 0) > 0) {
+                  sizeUnitPrices[size] = item.unit_price;
+                }
+              }
+            }
+
+            return {
               tempId: genTempId(),
-              serviceId: f.finishing_service_id ?? null,
-              serviceName: f.service_name,
-              unitPrice: f.unit_price,
-            })),
-            priceOverridden: item.price_overridden,
-            overriddenPrice: item.price_overridden ? item.unit_price : 0,
-            overrideReason: item.override_reason ?? '',
-            notes: item.notes ?? '',
-          }))
+              garmentId: first.garment_id ?? null,
+              description: first.description,
+              brand: '',
+              styleNumber: '',
+              color: first.color ?? '',
+              sizes: mergedSizes,
+              blankCost: first.blank_cost ?? 0,
+              markupPct: first.markup_pct ?? 0.40,
+              decorations: (first.order_item_decorations ?? []).map((d) => {
+                const group = d.decoration_group_id ? groupsMap.get(d.decoration_group_id) : undefined;
+                return {
+                  tempId: genTempId(),
+                  groupId: d.decoration_group_id ?? '',
+                  groupName: group?.name ?? d.decoration_type,
+                  groupColLabels: group?.col_labels ?? [],
+                  colIndex: d.col_index ?? 0,
+                  location: d.location,
+                  unitPrice: d.unit_price,
+                };
+              }),
+              finishing: (first.order_item_finishing ?? []).map((f) => ({
+                tempId: genTempId(),
+                serviceId: f.finishing_service_id ?? null,
+                serviceName: f.service_name,
+                unitPrice: f.unit_price,
+              })),
+              priceOverridden: isMultiGroup ? false : first.price_overridden,
+              overriddenPrice: isMultiGroup ? 0 : (first.price_overridden ? first.unit_price : 0),
+              overrideReason: first.override_reason ?? '',
+              notes: first.notes ?? '',
+              sizeUnitPrices,
+            };
+          })
         : [emptyGarmentLine()],
     );
 
@@ -1415,13 +1493,10 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
 
   // ── Totals computation ────────────────────────────────────────────────────
   const billableItems = useMemo(() => {
-    const garment = garmentLines.map((l) => ({
-      qty: totalQty(l.sizes),
-      unit_price: effectiveUnitPrice(l),
-    }));
+    const garment = garmentLines.map((l) => ({ qty: 1, unit_price: computeLineBreakdown(l, decoMatrix).total }));
     const fees = setupFees.map((f) => ({ qty: f.qty, unit_price: f.unitPrice }));
     return [...garment, ...fees];
-  }, [garmentLines, setupFees]);
+  }, [garmentLines, setupFees, decoMatrix]);
 
   const sub = calcSubtotal(billableItems);
   const disc = calcDiscount(sub, discountType, discountValue);
@@ -1466,58 +1541,72 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
         orderId = newOrder.id;
       }
 
-      // Insert garment lines
+      // Insert garment lines — split into separate order_items per price group
       for (const line of garmentLines) {
         const qty = totalQty(line.sizes);
         if (qty === 0 && !line.description) continue;
-        const unitPrice = effectiveUnitPrice(line);
 
-        const { data: item, error: itemErr } = await db
-          .from('order_items')
-          .insert({
-            order_id: orderId,
-            line_type: 'garment',
-            garment_id: line.garmentId,
-            description: line.description || 'Garment',
-            qty: qty || 0,
-            unit_price: unitPrice,
-            size_matrix: line.sizes,
-            blank_cost: line.blankCost,
-            markup_pct: line.markupPct,
-            price_overridden: line.priceOverridden,
-            override_reason: line.priceOverridden ? (line.overrideReason || null) : null,
-            color: line.color || null,
-            taxable: true,
-            notes: line.notes || null,
-          })
-          .select('id')
-          .single();
-        if (itemErr) throw itemErr;
+        const priceGroups = groupSizesByPrice(line);
+        const isMultiPrice = priceGroups.length > 1;
 
-        // Insert decorations using generic group system
-        for (let i = 0; i < line.decorations.length; i++) {
-          const d = line.decorations[i];
-          await db.from('order_item_decorations').insert({
-            order_item_id: item.id,
-            decoration_type: d.groupName,
-            decoration_group_id: d.groupId || null,
-            col_index: d.colIndex,
-            location: d.location,
-            unit_price: d.unitPrice,
-            sort_order: i,
-          });
-        }
+        // When no active sizes, save as a single placeholder item
+        const groupsToSave = priceGroups.length > 0
+          ? priceGroups
+          : [{ price: effectiveUnitPrice(line), sizes: [], qty: 0, sizeMatrix: line.sizes }];
 
-        // Insert finishing
-        for (let i = 0; i < line.finishing.length; i++) {
-          const f = line.finishing[i];
-          await db.from('order_item_finishing').insert({
-            order_item_id: item.id,
-            finishing_service_id: f.serviceId,
-            service_name: f.serviceName,
-            unit_price: f.unitPrice,
-            sort_order: i,
-          });
+        for (const group of groupsToSave) {
+          const sizeLabel = group.sizes.length > 0 ? group.sizes.join(', ') : null;
+          const { data: item, error: itemErr } = await db
+            .from('order_items')
+            .insert({
+              order_id: orderId,
+              line_type: 'garment',
+              garment_id: line.garmentId,
+              description: line.description || 'Garment',
+              qty: group.qty,
+              unit_price: group.price,
+              size_matrix: group.sizeMatrix,
+              blank_cost: line.blankCost,
+              markup_pct: line.markupPct,
+              price_overridden: isMultiPrice ? true : line.priceOverridden,
+              override_reason: isMultiPrice ? null : (line.priceOverridden ? (line.overrideReason || null) : null),
+              color: line.color || null,
+              taxable: true,
+              notes: line.notes || null,
+              size: sizeLabel,
+            })
+            .select('id')
+            .single();
+          if (itemErr) throw itemErr;
+
+          // Decoration unit price is re-looked up per group qty so tiers are correct
+          for (let i = 0; i < line.decorations.length; i++) {
+            const d = line.decorations[i];
+            const decoUnitPrice = isMultiPrice
+              ? decoUnitPriceForQty(d, decoMatrix, group.qty)
+              : d.unitPrice;
+            await db.from('order_item_decorations').insert({
+              order_item_id: item.id,
+              decoration_type: d.groupName,
+              decoration_group_id: d.groupId || null,
+              col_index: d.colIndex,
+              location: d.location,
+              unit_price: decoUnitPrice,
+              sort_order: i,
+            });
+          }
+
+          // Finishing (same for all price groups)
+          for (let i = 0; i < line.finishing.length; i++) {
+            const f = line.finishing[i];
+            await db.from('order_item_finishing').insert({
+              order_item_id: item.id,
+              finishing_service_id: f.serviceId,
+              service_name: f.serviceName,
+              unit_price: f.unitPrice,
+              sort_order: i,
+            });
+          }
         }
       }
 
@@ -1761,19 +1850,20 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
                     .filter((l) => totalQty(l.sizes) > 0 || l.description)
                     .map((l) => {
                       const qty = totalQty(l.sizes);
+                      const hasSizeOverrides = Object.keys(l.sizeUnitPrices).length > 0;
                       const up = effectiveUnitPrice(l);
+                      const subtotal = garmentLineSubtotal(l);
                       return (
                         <div key={l.tempId} className="flex items-center justify-between px-4 py-2.5 text-sm">
                           <div className="min-w-0">
                             <p className="font-medium truncate">{l.description || 'Garment'}</p>
                             <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                              {qty} pcs × {formatCurrency(up)}/pc
-                              {l.priceOverridden && (
-                                <span className="ml-1.5 text-amber-600 font-medium">(override)</span>
-                              )}
+                              {hasSizeOverrides
+                                ? `${qty} pcs (per-size pricing)`
+                                : `${qty} pcs × ${formatCurrency(up)}/pc`}
                             </p>
                           </div>
-                          <span className="font-semibold shrink-0 ml-4">{formatCurrency(qty * up)}</span>
+                          <span className="font-semibold shrink-0 ml-4">{formatCurrency(subtotal)}</span>
                         </div>
                       );
                     })}
@@ -1880,6 +1970,7 @@ export function OrderCreateModal({ open, onClose, editOrder }: OrderCreateModalP
           discountValue={discountValue}
           taxRate={taxRate}
           depositAmount={depositAmount}
+          decoMatrix={decoMatrix}
         />
 
         </div>{/* end body flex */}

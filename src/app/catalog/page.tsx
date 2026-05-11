@@ -59,7 +59,19 @@ function iconComponent(name: string) {
 
 // ── Garments Tab ──────────────────────────────────────────────────────────────
 
-const ALL_UPCHARGE_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
+const STANDARD_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
+
+function initSizePrices(g: Garment | null): Record<string, string> {
+  const upcharges = (g?.size_upcharges ?? {}) as Record<string, number>;
+  const allKeys = [...new Set([...STANDARD_SIZES, ...Object.keys(upcharges)])];
+  return Object.fromEntries(allKeys.map((s) => [s, String(upcharges[s] ?? '')]));
+}
+
+function initCustomSizes(g: Garment | null): string[] {
+  return Object.keys((g?.size_upcharges ?? {}) as Record<string, number>).filter(
+    (k) => !STANDARD_SIZES.includes(k)
+  );
+}
 
 function GarmentFormDialog({ open, garment, onClose, onSave }: {
   open: boolean; garment: Garment | null; onClose: () => void; onSave: () => void;
@@ -70,52 +82,49 @@ function GarmentFormDialog({ open, garment, onClose, onSave }: {
   const [name, setName] = useState(garment?.name ?? '');
   const [category, setCategory] = useState(garment?.category ?? 'T-Shirt');
   const [color, setColor] = useState(garment?.color ?? '');
-  const [baseCost, setBaseCost] = useState(garment?.base_cost?.toString() ?? '');
-  const [markup, setMarkup] = useState(String(Math.round((garment?.markup_value ?? 0.40) * 100)));
-  const [upcharges, setUpcharges] = useState<Record<string, string>>(
-    Object.fromEntries(
-      ALL_UPCHARGE_SIZES.map((s) => [s, String((garment?.size_upcharges?.[s] as number | undefined) ?? '')])
-    )
-  );
+  const [sizePrices, setSizePrices] = useState<Record<string, string>>(initSizePrices(garment));
+  const [customSizes, setCustomSizes] = useState<string[]>(initCustomSizes(garment));
+  const [newSizeInput, setNewSizeInput] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Re-sync when garment prop changes (open for different garment)
   useEffect(() => {
     setBrand(garment?.brand ?? '');
     setStyleNumber(garment?.style_number ?? '');
     setName(garment?.name ?? '');
     setCategory(garment?.category ?? 'T-Shirt');
     setColor(garment?.color ?? '');
-    setBaseCost(garment?.base_cost?.toString() ?? '');
-    setMarkup(String(Math.round((garment?.markup_value ?? 0.40) * 100)));
-    setUpcharges(
-      Object.fromEntries(
-        ALL_UPCHARGE_SIZES.map((s) => [s, String((garment?.size_upcharges?.[s] as number | undefined) ?? '')])
-      )
-    );
+    setSizePrices(initSizePrices(garment));
+    setCustomSizes(initCustomSizes(garment));
+    setNewSizeInput('');
   }, [garment]);
 
-  const sellPrice = useMemo(() => {
-    const cost = parseFloat(baseCost) || 0;
-    const m = (parseFloat(markup) || 0) / 100;
-    return cost > 0 ? cost * (1 + m) : null;
-  }, [baseCost, markup]);
+  const addCustomSize = () => {
+    const s = newSizeInput.trim().toUpperCase();
+    if (!s || STANDARD_SIZES.includes(s) || customSizes.includes(s)) return;
+    setCustomSizes((prev) => [...prev, s]);
+    setSizePrices((prev) => ({ ...prev, [s]: '' }));
+    setNewSizeInput('');
+  };
+
+  const removeCustomSize = (s: string) => {
+    setCustomSizes((prev) => prev.filter((x) => x !== s));
+    setSizePrices((prev) => { const next = { ...prev }; delete next[s]; return next; });
+  };
 
   const handleSave = async () => {
     if (!name.trim() || !brand.trim()) { toast.error('Brand and name are required'); return; }
     setSaving(true);
     try {
+      const allSizes = [...STANDARD_SIZES, ...customSizes];
       const size_upcharges = Object.fromEntries(
-        Object.entries(upcharges)
-          .map(([k, v]) => [k, parseFloat(v) || 0])
+        allSizes
+          .map((k) => [k, parseFloat(sizePrices[k] ?? '') || 0])
           .filter(([, v]) => (v as number) > 0)
       );
       const payload = {
         brand: brand.trim(), style_number: styleNumber.trim() || null, name: name.trim(),
         category: category || null, color: color.trim() || null,
-        base_cost: parseFloat(baseCost) || 0,
-        size_upcharges,
-        markup_value: (parseFloat(markup) || 40) / 100, active: true,
+        base_cost: 0, size_upcharges, markup_value: 0, active: true,
       };
       if (isEdit) {
         const { error } = await db.from('garments').update(payload).eq('id', garment!.id);
@@ -129,6 +138,8 @@ function GarmentFormDialog({ open, garment, onClose, onSave }: {
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Failed'); }
     finally { setSaving(false); }
   };
+
+  const allSizes = [...STANDARD_SIZES, ...customSizes];
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -171,59 +182,48 @@ function GarmentFormDialog({ open, garment, onClose, onSave }: {
             </div>
           </div>
 
-          {/* Base cost + Markup */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">Base Cost / pc</Label>
-              <div className="flex">
-                <span className="h-8 flex items-center px-2.5 text-sm border-y border-l rounded-l-md" style={{ borderColor: 'rgba(0,0,0,0.08)', backgroundColor: 'hsl(var(--muted))' }}>$</span>
-                <Input className="h-8 text-sm rounded-l-none" type="number" min="0" step="0.01" placeholder="0.00" value={baseCost} onChange={(e) => setBaseCost(e.target.value)} />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Default Markup %</Label>
-              <div className="flex">
-                <Input className="h-8 text-sm rounded-r-none" type="number" min="0" max="500" placeholder="40" value={markup} onChange={(e) => setMarkup(e.target.value)} />
-                <span className="h-8 flex items-center px-2.5 text-sm border-y border-r rounded-r-md" style={{ borderColor: 'rgba(0,0,0,0.08)', backgroundColor: 'hsl(var(--muted))' }}>%</span>
-              </div>
-              {sellPrice !== null && (
-                <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                  Sell price: <strong>{formatCurrency(sellPrice)}</strong> / pc
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Size upcharges */}
+          {/* Price per size */}
           <div className="space-y-2">
             <div>
-              <Label className="text-xs">Size Upcharges</Label>
+              <Label className="text-xs">Price per Size</Label>
               <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                Added on top of base cost for oversized garments. Leave blank for no upcharge.
+                Set the complete sell price for each size. Leave blank to skip.
               </p>
             </div>
             <div className="rounded-xl p-4 space-y-3" style={{ backgroundColor: 'hsl(var(--muted)/0.3)' }}>
-              <div className="grid grid-cols-9 gap-2">
-                {ALL_UPCHARGE_SIZES.map((size) => {
-                  const val = upcharges[size] ?? '';
+              <div className="flex flex-wrap gap-2">
+                {allSizes.map((size) => {
+                  const val = sizePrices[size] ?? '';
                   const hasVal = parseFloat(val) > 0;
+                  const isCustom = !STANDARD_SIZES.includes(size);
                   return (
-                    <div key={size} className="flex flex-col items-center gap-1">
+                    <div key={size} className="relative flex flex-col items-center gap-1" style={{ width: 52 }}>
+                      {isCustom && (
+                        <button
+                          type="button"
+                          className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full flex items-center justify-center z-10"
+                          style={{ backgroundColor: '#fee2e2', color: '#ef4444' }}
+                          onClick={() => removeCustomSize(size)}
+                          title={`Remove ${size}`}
+                        >
+                          <X className="h-2 w-2" />
+                        </button>
+                      )}
                       <span
                         className="text-xs font-semibold"
                         style={{ color: hasVal ? 'hsl(218 91% 57%)' : 'hsl(var(--muted-foreground))' }}
                       >
                         {size}
                       </span>
-                      <div className="flex flex-col items-center">
-                        <span className="text-xs mb-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>+$</span>
+                      <div className="flex flex-col items-center w-full">
+                        <span className="text-xs mb-0.5" style={{ color: 'hsl(var(--muted-foreground))' }}>$</span>
                         <input
                           type="number"
                           min="0"
                           step="0.25"
-                          placeholder="0"
+                          placeholder="—"
                           value={val}
-                          onChange={(e) => setUpcharges((prev) => ({ ...prev, [size]: e.target.value }))}
+                          onChange={(e) => setSizePrices((prev) => ({ ...prev, [size]: e.target.value }))}
                           className="w-full h-8 rounded-md text-center text-sm font-medium outline-none transition-colors focus:ring-1"
                           style={{
                             border: `1px solid ${hasVal ? 'hsl(218 91% 57% / 0.4)' : 'rgba(0,0,0,0.08)'}`,
@@ -236,12 +236,34 @@ function GarmentFormDialog({ open, garment, onClose, onSave }: {
                   );
                 })}
               </div>
-              {Object.entries(upcharges).some(([, v]) => parseFloat(v) > 0) && (
+
+              {/* Add custom size */}
+              <div className="flex items-center gap-2 pt-1 border-t" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
+                <input
+                  type="text"
+                  placeholder="Custom size (e.g. 6XL, Youth S, One Size…)"
+                  value={newSizeInput}
+                  onChange={(e) => setNewSizeInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addCustomSize()}
+                  className="flex-1 h-7 rounded-md px-2.5 text-xs outline-none"
+                  style={{ border: '1px solid rgba(0,0,0,0.08)', backgroundColor: 'white' }}
+                />
+                <button
+                  type="button"
+                  className="h-7 px-2.5 rounded-md text-xs font-medium flex items-center gap-1 transition-opacity disabled:opacity-40"
+                  style={{ backgroundColor: 'hsl(218 91% 57%)', color: 'white' }}
+                  onClick={addCustomSize}
+                  disabled={!newSizeInput.trim()}
+                >
+                  <Plus className="h-3 w-3" /> Add Size
+                </button>
+              </div>
+
+              {Object.entries(sizePrices).some(([, v]) => parseFloat(v) > 0) && (
                 <p className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>
-                  Upcharges set:{' '}
-                  {Object.entries(upcharges)
-                    .filter(([, v]) => parseFloat(v) > 0)
-                    .map(([k, v]) => `${k} +$${parseFloat(v).toFixed(2)}`)
+                  {[...STANDARD_SIZES, ...customSizes]
+                    .filter((k) => parseFloat(sizePrices[k] ?? '') > 0)
+                    .map((k) => `${k} $${parseFloat(sizePrices[k]).toFixed(2)}`)
                     .join('  ·  ')}
                 </p>
               )}
@@ -305,24 +327,21 @@ function GarmentsTab() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-                        {['Brand', 'Style #', 'Name', 'Color', 'Cost', 'Upcharges', 'Markup', 'Sell Price', ''].map((h) => (
+                        {['Brand', 'Style #', 'Name', 'Color', 'Size Prices', ''].map((h) => (
                           <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {items.map((g) => {
-                        const up = Object.entries(g.size_upcharges as Record<string, number> ?? {}).filter(([,v]) => v > 0).map(([k,v]) => `${k}+$${v}`).join(' ');
+                        const up = Object.entries(g.size_upcharges as Record<string, number> ?? {}).filter(([,v]) => v > 0).map(([k,v]) => `${k} $${v}`).join(' · ');
                         return (
                           <tr key={g.id} style={{ borderBottom: '1px solid hsl(var(--border))' }}>
                             <td className="px-4 py-2.5 font-medium">{g.brand}</td>
                             <td className="px-4 py-2.5 font-mono text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>{g.style_number ?? '—'}</td>
                             <td className="px-4 py-2.5">{g.name}</td>
                             <td className="px-4 py-2.5">{g.color ?? '—'}</td>
-                            <td className="px-4 py-2.5 font-semibold">{formatCurrency(g.base_cost)}</td>
-                            <td className="px-4 py-2.5 text-xs" style={{ color: 'hsl(38 92% 40%)' }}>{up || '—'}</td>
-                            <td className="px-4 py-2.5">{Math.round(g.markup_value * 100)}%</td>
-                            <td className="px-4 py-2.5 font-semibold" style={{ color: 'hsl(218 91% 57%)' }}>{formatCurrency(g.base_cost * (1 + g.markup_value))}</td>
+                            <td className="px-4 py-2.5 text-xs font-medium" style={{ color: 'hsl(218 91% 57%)' }}>{up || <span style={{ color: 'hsl(var(--muted-foreground))' }}>—</span>}</td>
                             <td className="px-4 py-2.5">
                               <div className="flex gap-1">
                                 <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditGarment(g)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -354,14 +373,14 @@ function AddGroupDialog({ open, onClose, onSave }: { open: boolean; onClose: () 
   const [icon, setIcon] = useState('Printer');
   const [color, setColor] = useState('#2E7CF6');
   const [colCount, setColCount] = useState(3);
-  const [colLabels, setColLabels] = useState(['Col 1', 'Col 2', 'Col 3', '', '', '']);
+  const [colLabels, setColLabels] = useState(['Col 1', 'Col 2', 'Col 3', '', '', '', '', '']);
   const [saving, setSaving] = useState(false);
 
   const handleColCountChange = (n: number) => {
     setColCount(n);
     setColLabels((prev) => {
       const next = [...prev];
-      while (next.length < 6) next.push('');
+      while (next.length < 8) next.push('');
       return next;
     });
   };
@@ -383,7 +402,7 @@ function AddGroupDialog({ open, onClose, onSave }: { open: boolean; onClose: () 
       toast.success(`"${name}" decoration group added`);
       onSave(); onClose();
       setName(''); setDescription(''); setIcon('Printer'); setColor('#2E7CF6');
-      setColCount(3); setColLabels(['Col 1', 'Col 2', 'Col 3', '', '', '']);
+      setColCount(3); setColLabels(['Col 1', 'Col 2', 'Col 3', '', '', '', '', '']);
     } catch (e: unknown) { toast.error(e instanceof Error ? e.message : 'Failed'); }
     finally { setSaving(false); }
   };
@@ -446,7 +465,7 @@ function AddGroupDialog({ open, onClose, onSave }: { open: boolean; onClose: () 
             <div className="flex items-center gap-3">
               <Label className="text-xs">Number of price columns</Label>
               <div className="flex gap-1">
-                {[1, 2, 3, 4, 5, 6].map((n) => (
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
                   <button
                     key={n}
                     type="button"
@@ -505,13 +524,18 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
   const [addingRow, setAddingRow] = useState(false);
   const [newQtyMin, setNewQtyMin] = useState('');
   const [newQtyMax, setNewQtyMax] = useState('');
-  const [newCols, setNewCols] = useState<string[]>(Array(6).fill(''));
+  const [newCols, setNewCols] = useState<string[]>([]);
+  const [addingCol, setAddingCol] = useState(false);
+  const [newColLabel, setNewColLabel] = useState('');
 
   const IconComp = iconComponent(group.icon);
-  const cols = Array.from({ length: group.col_count }, (_, i) => `col_${i + 1}` as keyof DecorationMatrixRow);
 
-  const getValue = (row: DecorationMatrixRow, colKey: string): string =>
-    edited[row.id]?.[colKey] ?? String(row[colKey as keyof DecorationMatrixRow] ?? '');
+  const getPriceValue = (row: DecorationMatrixRow, colIdx: number): string => {
+    const key = `p_${colIdx}`;
+    if (edited[row.id]?.[key] !== undefined) return edited[row.id][key];
+    const val = row.prices[colIdx];
+    return val != null ? String(val) : '';
+  };
 
   const getQtyValue = (row: DecorationMatrixRow, key: 'qty_min' | 'qty_max'): string => {
     if (edited[row.id]?.[key] !== undefined) return edited[row.id][key];
@@ -529,12 +553,18 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
       for (const row of matrixRows) {
         const changes = edited[row.id];
         if (!changes || Object.keys(changes).length === 0) continue;
-        const patch: Record<string, number | null> = {};
-        Object.entries(changes).forEach(([k, v]) => {
-          if (k === 'qty_min') patch[k] = parseInt(v) || row.qty_min;
-          else if (k === 'qty_max') patch[k] = v === '' ? null : (parseInt(v) || null);
-          else patch[k] = parseFloat(v) || null;
-        });
+        const patch: Record<string, unknown> = {};
+        if (changes.qty_min !== undefined) patch.qty_min = parseInt(changes.qty_min) || row.qty_min;
+        if (changes.qty_max !== undefined) patch.qty_max = changes.qty_max === '' ? null : (parseInt(changes.qty_max) || null);
+        const priceKeys = Object.keys(changes).filter(k => k.startsWith('p_'));
+        if (priceKeys.length > 0) {
+          const newPrices = [...row.prices];
+          priceKeys.forEach(k => {
+            const idx = parseInt(k.slice(2));
+            newPrices[idx] = parseFloat(changes[k]) || null;
+          });
+          patch.prices = newPrices;
+        }
         const { error } = await db.from('decoration_matrix').update(patch).eq('id', row.id);
         if (error) throw error;
       }
@@ -548,16 +578,45 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
   const addRow = async () => {
     const qMin = parseInt(newQtyMin);
     if (!qMin) { toast.error('Enter min qty'); return; }
-    const patch: Record<string, number | null> = { group_id: group.id as unknown as number, qty_min: qMin, qty_max: parseInt(newQtyMax) || null };
-    for (let i = 0; i < group.col_count; i++) {
-      patch[`col_${i + 1}`] = parseFloat(newCols[i]) || null;
-    }
-    const { error } = await db.from('decoration_matrix').insert(patch);
+    const prices = Array.from({ length: group.col_count }, (_, i) => parseFloat(newCols[i] ?? '') || null);
+    const { error } = await db.from('decoration_matrix').insert({
+      group_id: group.id, qty_min: qMin, qty_max: parseInt(newQtyMax) || null, prices,
+    });
     if (error) { toast.error(error.message); return; }
     qc.invalidateQueries({ queryKey: ['decoration_matrix'] });
     setAddingRow(false);
-    setNewQtyMin(''); setNewQtyMax(''); setNewCols(Array(6).fill(''));
+    setNewQtyMin(''); setNewQtyMax(''); setNewCols([]);
     toast.success('Row added');
+  };
+
+  const addColumn = async () => {
+    const label = newColLabel.trim() || `Col ${group.col_count + 1}`;
+    const newLabels = [...group.col_labels, label];
+    for (const row of matrixRows) {
+      const { error } = await db.from('decoration_matrix').update({ prices: [...row.prices, null] }).eq('id', row.id);
+      if (error) { toast.error(error.message); return; }
+    }
+    const { error } = await db.from('decoration_groups').update({ col_count: group.col_count + 1, col_labels: newLabels }).eq('id', group.id);
+    if (error) { toast.error(error.message); return; }
+    qc.invalidateQueries({ queryKey: ['decoration_groups'] });
+    qc.invalidateQueries({ queryKey: ['decoration_matrix'] });
+    setAddingCol(false); setNewColLabel('');
+    toast.success(`Column "${label}" added`);
+  };
+
+  const removeColumn = async (colIdx: number) => {
+    if (group.col_count <= 1) { toast.error('Must have at least 1 column'); return; }
+    const newLabels = group.col_labels.filter((_, i) => i !== colIdx);
+    for (const row of matrixRows) {
+      const newPrices = row.prices.filter((_, i) => i !== colIdx);
+      const { error } = await db.from('decoration_matrix').update({ prices: newPrices }).eq('id', row.id);
+      if (error) { toast.error(error.message); return; }
+    }
+    const { error } = await db.from('decoration_groups').update({ col_count: group.col_count - 1, col_labels: newLabels }).eq('id', group.id);
+    if (error) { toast.error(error.message); return; }
+    qc.invalidateQueries({ queryKey: ['decoration_groups'] });
+    qc.invalidateQueries({ queryKey: ['decoration_matrix'] });
+    toast.success('Column removed');
   };
 
   const deleteRow = async (id: string) => {
@@ -614,6 +673,9 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setAddingRow((v) => !v)}>
                 <Plus className="h-3 w-3" /> Add Qty Tier
               </Button>
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setAddingCol((v) => !v); setNewColLabel(''); }}>
+                <Plus className="h-3 w-3" /> Add Column
+              </Button>
               {hasChanges && (
                 <Button size="sm" className="h-7 text-xs" onClick={saveMatrix} disabled={saving} style={{ backgroundColor: group.color }}>
                   <Save className="h-3 w-3" /> {saving ? 'Saving…' : 'Save'}
@@ -621,6 +683,28 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
               )}
             </div>
           </div>
+
+          {/* Add column form */}
+          {addingCol && (
+            <div className="mx-4 mb-3 rounded-lg border p-3" style={{ borderColor: 'hsl(var(--border))', backgroundColor: 'hsl(var(--muted)/0.3)' }}>
+              <p className="text-xs font-semibold mb-2">New Column</p>
+              <div className="flex gap-2 items-end">
+                <div className="space-y-0.5">
+                  <Label className="text-xs">Column Label</Label>
+                  <Input
+                    className="h-7 text-xs w-40"
+                    placeholder={`Col ${group.col_count + 1}`}
+                    value={newColLabel}
+                    onChange={(e) => setNewColLabel(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addColumn()}
+                    autoFocus
+                  />
+                </div>
+                <Button size="sm" className="h-7 text-xs" onClick={addColumn} style={{ backgroundColor: group.color }}>Add</Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAddingCol(false)}>Cancel</Button>
+              </div>
+            </div>
+          )}
 
           {/* Add row form */}
           {addingRow && (
@@ -656,8 +740,20 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
               <thead>
                 <tr style={{ borderBottom: '1px solid hsl(var(--border))' }}>
                   <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>Qty Tier</th>
-                  {group.col_labels.slice(0, group.col_count).map((label) => (
-                    <th key={label} className="px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>{label}</th>
+                  {group.col_labels.slice(0, group.col_count).map((label, colIdx) => (
+                    <th key={colIdx} className="px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider" style={{ color: 'hsl(var(--muted-foreground))' }}>
+                      <div className="flex items-center justify-center gap-1 group/col">
+                        <span>{label}</span>
+                        <button
+                          type="button"
+                          title="Remove column"
+                          className="opacity-0 group-hover/col:opacity-100 p-0.5 rounded hover:bg-red-100 text-red-400 hover:text-red-600 transition-opacity"
+                          onClick={() => removeColumn(colIdx)}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </th>
                   ))}
                   <th className="px-2 py-2 w-8" />
                 </tr>
@@ -697,10 +793,10 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
                           />
                         </div>
                       </td>
-                      {cols.map((colKey) => {
-                        const isDirty = edited[row.id]?.[colKey] !== undefined;
+                      {Array.from({ length: group.col_count }, (_, colIdx) => {
+                        const isDirty = edited[row.id]?.[`p_${colIdx}`] !== undefined;
                         return (
-                          <td key={colKey} className="px-2 py-1">
+                          <td key={colIdx} className="px-2 py-1">
                             <div className="flex items-center justify-center gap-0.5">
                               <span className="text-xs" style={{ color: 'hsl(var(--muted-foreground))' }}>$</span>
                               <input
@@ -712,8 +808,8 @@ function DecorationGroupCard({ group, matrixRows, onRefresh }: {
                                   borderColor: isDirty ? group.color : 'hsl(var(--border))',
                                   backgroundColor: isDirty ? `${group.color}08` : 'transparent',
                                 }}
-                                value={getValue(row, colKey)}
-                                onChange={(e) => setField(row.id, colKey, e.target.value)}
+                                value={getPriceValue(row, colIdx)}
+                                onChange={(e) => setField(row.id, `p_${colIdx}`, e.target.value)}
                               />
                             </div>
                           </td>

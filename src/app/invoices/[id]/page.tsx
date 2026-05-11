@@ -14,7 +14,7 @@ import { supabase, db } from '@/lib/supabase';
 import { INVOICE_STATUSES } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { InvoicePreview } from '@/components/invoices/InvoicePreview';
-import type { Invoice, InvoiceItem, CompanySettings } from '@/types/database';
+import type { Invoice, InvoiceItem, CompanySettings, OrderItem } from '@/types/database';
 
 type InvoiceWithItems = Invoice & { invoice_items?: InvoiceItem[] };
 type LayoutType = 'classic' | 'modern' | 'minimal' | 'compact';
@@ -31,7 +31,31 @@ function useInvoice(id: string) {
         .eq('id', id)
         .single();
       if (error) throw error;
-      return data as InvoiceWithItems;
+      const invoice = data as InvoiceWithItems;
+
+      // Fetch order items to resolve size labels when order_item_id is present
+      const orderItemIds = (invoice.invoice_items ?? [])
+        .map((i) => i.order_item_id)
+        .filter((x): x is string => !!x);
+      if (orderItemIds.length > 0) {
+        const { data: orderItems } = await supabase
+          .from('order_items')
+          .select('id, size, size_matrix')
+          .in('id', orderItemIds);
+        type OiRow = { id: string; size: string | null; size_matrix: Record<string, number> | null };
+        const rows = (orderItems ?? []) as unknown as OiRow[];
+        const oiMap = new Map(rows.map((o) => [o.id, o]));
+        invoice.invoice_items = (invoice.invoice_items ?? []).map((i) => {
+          if (i.size_label || !i.order_item_id) return i;
+          const oi = oiMap.get(i.order_item_id);
+          if (!oi) return i;
+          const sizeLabel = oi.size || (oi.size_matrix
+            ? Object.entries(oi.size_matrix as Record<string, number>).filter(([, q]) => q > 0).map(([s]) => s).join(', ')
+            : null);
+          return { ...i, size_label: sizeLabel };
+        });
+      }
+      return invoice;
     },
   });
 }
@@ -139,6 +163,7 @@ export default function InvoiceDetailPage() {
     qty: i.qty,
     rate: i.rate,
     taxable: i.taxable,
+    size_label: i.size_label ?? undefined,
   }));
 
   const layoutButtons: { key: LayoutType; label: string; icon: React.ElementType }[] = [

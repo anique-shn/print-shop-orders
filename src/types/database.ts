@@ -151,6 +151,8 @@ export interface InvoiceItem {
   qty: number;
   rate: number;
   taxable: boolean;
+  size_label: string | null;
+  order_item_id: string | null;
   created_at: string;
 }
 export type InvoiceItemInsert = Omit<InvoiceItem, 'id' | 'created_at'>;
@@ -257,12 +259,7 @@ export interface DecorationMatrixRow {
   group_id: string;
   qty_min: number;
   qty_max: number | null;
-  col_1: number | null;
-  col_2: number | null;
-  col_3: number | null;
-  col_4: number | null;
-  col_5: number | null;
-  col_6: number | null;
+  prices: (number | null)[];
   created_at: string;
 }
 export type DecorationMatrixRowInsert = Omit<DecorationMatrixRow, 'id' | 'created_at'>;

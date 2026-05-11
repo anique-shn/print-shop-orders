@@ -36,6 +36,8 @@ interface InvLineRow {
   qty: number;
   rate: number;
   taxable: boolean;
+  size_label?: string;
+  order_item_id?: string;
 }
 
 const emptyLine = (): InvLineRow => ({ description: '', qty: 1, rate: 0, taxable: false });
@@ -361,6 +363,10 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
         qty: oi.qty,
         rate: oi.unit_price,
         taxable: oi.taxable,
+        size_label: oi.size || (oi.size_matrix
+          ? Object.entries(oi.size_matrix as Record<string, number>).filter(([, q]) => q > 0).map(([s]) => s).join(', ')
+          : undefined),
+        order_item_id: oi.id,
       })));
     }
     toast.success(`Imported ${order.order_items?.length ?? 0} items from ${order.order_number}`);
@@ -434,6 +440,8 @@ export function CreateInvoiceModal({ open, onClose, editInvoice }: CreateInvoice
         qty: l.qty,
         rate: l.rate,
         taxable: l.taxable,
+        size_label: l.size_label ?? null,
+        order_item_id: l.order_item_id ?? null,
       }));
       if (itemRows.length) {
         const { error } = await db.from('invoice_items').insert(itemRows);
